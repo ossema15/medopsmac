@@ -35,6 +35,8 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
+        env:
+          NODE_ENV: development
         run: |
           if [ -f package-lock.json ]; then npm ci --include=dev; else npm i --include=dev; fi
 
@@ -66,10 +68,10 @@ jobs:
               --sourceArm64 "dist/mac-arm64/MedOps.app" \
               --destination "dist/MedOps-universal.app"; \
           else \
-            npx -y @electron/universal -- \
+            npx --yes -p @electron/universal -c 'electron-universal \
               --sourceX64 "dist/mac/MedOps.app" \
               --sourceArm64 "dist/mac-arm64/MedOps.app" \
-              --destination "dist/MedOps-universal.app"; \
+              --destination "dist/MedOps-universal.app"'; \
           fi
           # 3) Package the universal app into DMG/ZIP
           npx electron-builder --mac dmg zip --prepackaged dist/MedOps-universal.app
