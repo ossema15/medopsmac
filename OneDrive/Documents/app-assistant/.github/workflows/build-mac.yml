@@ -40,7 +40,7 @@ jobs:
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm i; fi
 
-      - name: Debug: show installed binaries
+      - name: "Debug: show installed binaries"
         run: |
           ls -la node_modules/.bin || true
 
