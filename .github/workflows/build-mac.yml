@@ -21,9 +21,6 @@ on:
 jobs:
   build-mac:
     runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
 
     steps:
       - name: Checkout
@@ -34,30 +31,15 @@ jobs:
         with:
           node-version: '20'
 
-      - name: "Debug: show workspace directory"
-        run: |
-          echo "Workspace: ${{ github.workspace }}"
-          pwd
-          ls -la
-
       - name: Install dependencies
         env:
           npm_config_production: "false"
         run: |
-          echo "Installing in $(pwd)"
-          ls -la package.json || true
           if [ -f package-lock.json ]; then npm ci; else npm i; fi
 
       - name: "Debug: show installed binaries"
         run: |
           ls -la node_modules/.bin || true
-
-      - name: "Debug: npm/npx versions and bin presence"
-        run: |
-          node -v
-          npm -v
-          npx --version || true
-          ls -la ./node_modules/.bin || true
 
       - name: Build renderer
         run: npm run build
@@ -77,7 +59,7 @@ jobs:
           npx electron-builder --mac dmg zip --x64
           npx electron-builder --mac dmg zip --arm64
           # 2) Merge into a universal .app (use devDependency CLI)
-          ./node_modules/.bin/electron-universal \
+          npx @electron/universal \
             --sourceX64 "dist/mac/MedOps.app" \
             --sourceArm64 "dist/mac-arm64/MedOps.app" \
             --destination "dist/MedOps-universal.app"
