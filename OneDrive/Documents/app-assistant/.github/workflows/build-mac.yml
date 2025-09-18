@@ -35,8 +35,14 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
+        env:
+          npm_config_production: "false"
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm i; fi
+
+      - name: Debug: show installed binaries
+        run: |
+          ls -la node_modules/.bin || true
 
       - name: Build renderer
         run: npm run build
@@ -55,8 +61,8 @@ jobs:
           # 1) Build per-arch apps to produce .app bundles
           npx electron-builder --mac dmg zip --x64
           npx electron-builder --mac dmg zip --arm64
-          # 2) Merge into a universal .app (use scoped package via npx)
-          npx --yes --package @electron/universal electron-universal \
+          # 2) Merge into a universal .app (use devDependency CLI)
+          npx electron-universal \
             --sourceX64 "dist/mac/MedOps.app" \
             --sourceArm64 "dist/mac-arm64/MedOps.app" \
             --destination "dist/MedOps-universal.app"
