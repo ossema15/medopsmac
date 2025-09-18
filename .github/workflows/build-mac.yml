@@ -24,6 +24,10 @@ jobs:
     defaults:
       run:
         working-directory: OneDrive/Documents/app-assistant
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
 
     steps:
       - name: Checkout
@@ -35,19 +39,14 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        env:
-          NODE_ENV: development
         run: |
-          if [ -f package-lock.json ]; then npm ci --include=dev; else npm i --include=dev; fi
-
-      - name: "Debug: show installed binaries"
-        run: |
-          ls -la node_modules/.bin || true
+          if [ -f package-lock.json ]; then npm ci; else npm i; fi
 
       - name: Build renderer
         run: npm run build
 
-      - name: Build macOS artifacts (universal)
+      - name: Build macOS artifacts
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
         env:
           # Optional signing/notarization (set these as GitHub Secrets if you want notarized builds)
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -58,42 +57,18 @@ jobs:
           # APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           # APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          # 1) Build per-arch apps to produce .app bundles
-          npx electron-builder --mac dmg zip --x64
-          npx electron-builder --mac dmg zip --arm64
-          # 2) Merge into a universal .app (use programmatic API; generate a small script to avoid YAML quoting issues)
-          mkdir -p scripts
-          printf "%s\n" \
-            "const { makeUniversalApp } = require('@electron/universal');" \
-            "(async () => {" \
-            "  await makeUniversalApp({" \
-            "    x64AppPath: 'dist/mac/MedOps.app'," \
-            "    arm64AppPath: 'dist/mac-arm64/MedOps.app'," \
-            "    outAppPath: 'dist/MedOps-universal.app'," \
-            "    force: true," \
-            "    mergeASARs: true," \
-            "  });" \
-            "})().catch((e) => { console.error(e); process.exit(1); });" \
-            > scripts/merge-universal.cjs
+          npx electron-builder --mac dmg zip --${{ matrix.arch }}
 
-          if node -e "require.resolve('@electron/universal')" >/dev/null 2>&1; then
-            echo "Merging using local @electron/universal"
-            node scripts/merge-universal.cjs
-          else
-            echo "Local require failed; merging using npx-provided @electron/universal"
-            npx -y -p @electron/universal node scripts/merge-universal.cjs
-          fi
-          # 3) Package the universal app into DMG/ZIP
-          npx electron-builder --mac dmg zip --prepackaged dist/MedOps-universal.app
-
-      - name: Upload DMG (universal)
+      - name: Upload DMG
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
         uses: actions/upload-artifact@v4
         with:
-          name: MedOps-universal-dmg
-          path: dist/*.dmg
+          name: MedOps-${{ matrix.arch }}-dmg
+          path: OneDrive/Documents/app-assistant/dist/*.dmg
 
-      - name: Upload ZIP (universal)
+      - name: Upload ZIP
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
         uses: actions/upload-artifact@v4
         with:
-          name: MedOps-universal-zip
-          path: dist/*.zip
+          name: MedOps-${{ matrix.arch }}-zip
+          path: OneDrive/Documents/app-assistant/dist/*.zip
