@@ -1,0 +1,74 @@
+name: Build macOS (DMG/ZIP)
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Architecture to build (x64, arm64, both)"
+        required: false
+        default: both
+  push:
+    branches: [ main ]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'webpack.config.js'
+      - 'src/**'
+      - 'main/**'
+      - 'app/**'
+      - '.github/workflows/build-mac.yml'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: OneDrive/Documents/app-assistant
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm i; fi
+
+      - name: Build renderer
+        run: npm run build
+
+      - name: Build macOS artifacts
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
+        env:
+          # Optional signing/notarization (set these as GitHub Secrets if you want notarized builds)
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_IDENTITY_AUTO: true
+          # If you use API key-based notarization instead, provide:
+          # APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          # APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          npx electron-builder --mac dmg zip --${{ matrix.arch }}
+
+      - name: Upload DMG
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: MedOps-${{ matrix.arch }}-dmg
+          path: OneDrive/Documents/app-assistant/dist/*.dmg
+
+      - name: Upload ZIP
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: MedOps-${{ matrix.arch }}-zip
+          path: OneDrive/Documents/app-assistant/dist/*.zip
