@@ -21,9 +21,6 @@ on:
 jobs:
   build-mac:
     runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: OneDrive/Documents/app-assistant
 
     steps:
       - name: Checkout
@@ -62,7 +59,7 @@ jobs:
           npx electron-builder --mac dmg zip --x64
           npx electron-builder --mac dmg zip --arm64
           # 2) Merge into a universal .app (use devDependency CLI)
-          npx electron-universal \
+          npx @electron/universal \
             --sourceX64 "dist/mac/MedOps.app" \
             --sourceArm64 "dist/mac-arm64/MedOps.app" \
             --destination "dist/MedOps-universal.app"
