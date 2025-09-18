@@ -25,7 +25,8 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
-    
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
