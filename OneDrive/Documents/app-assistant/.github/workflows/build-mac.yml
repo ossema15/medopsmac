@@ -25,7 +25,6 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
 
     steps:
       - name: Checkout
@@ -36,14 +35,17 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm i; fi
 
       - name: Build renderer
         run: npm run build
 
       - name: Build macOS artifacts
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
         env:
           # Optional signing/notarization (set these as GitHub Secrets if you want notarized builds)
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -57,12 +59,14 @@ jobs:
           npx electron-builder --mac dmg zip --${{ matrix.arch }}
 
       - name: Upload DMG
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
         uses: actions/upload-artifact@v4
         with:
           name: MedOps-${{ matrix.arch }}-dmg
           path: dist/*.dmg
 
       - name: Upload ZIP
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
         uses: actions/upload-artifact@v4
         with:
           name: MedOps-${{ matrix.arch }}-zip
