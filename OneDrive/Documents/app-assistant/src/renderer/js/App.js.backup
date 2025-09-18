@@ -1,0 +1,2985 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { preventAutoScroll } from './utils/scrollUtils';
+import { initializeFocusManagement } from './utils/focusUtils';
+import ScrollRestoration from './components/ScrollRestoration';
+import Sidebar from './components/Sidebar';
+import Dashboard from './pages/Dashboard';
+import PatientPanel from './pages/PatientPanel';
+import AllPatients from './pages/AllPatients';
+import Queue from './pages/Queue';
+import Appointments from './pages/Appointments';
+import Settings from './pages/Settings';
+import Login from './pages/Login';
+import MessagePanel from './components/MessagePanel';
+import ChatIcon from './components/ChatIcon';
+
+import Notification from './components/Notification';
+import ErrorBoundary from './components/ErrorBoundary';
+import Notifications from './pages/Notifications';
+import MedOpsTextEffect from './components/MedOpsTextEffect';
+import googleDriveService from './services/googleDriveService';
+import appointmentNotificationService from './services/appointmentNotificationService';
+
+
+// Generate or retrieve a unique client ID for this assistant instance
+const getClientId = () => {
+  let id = localStorage.getItem('assistantClientId');
+  if (!id) {
+    id = Math.random().toString(36).substr(2, 9);
+    localStorage.setItem('assistantClientId', id);
+  }
+  return id;
+};
+
+function App() {
+  // All hooks at the top
+  const { t, i18n } = useTranslation();
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [showMessagePanel, setShowMessagePanel] = useState(false);
+  console.log('[DEBUG][App.js] Initial showMessagePanel state:', false);
+  const [notifications, setNotifications] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [processedMessageIds, setProcessedMessageIds] = useState(new Set());
+  const processedMessageIdsRef = useRef(new Set());
+  const isOpeningChatPanelRef = useRef(false);
+  const currentProcessingMessageRef = useRef(null);
+  const lastUnreadCountMessageRef = useRef(null);
+  const prevShowMessagePanelRef = useRef(false);
+  const showMessagePanelRef = useRef(false);
+  const unreadCountRef = useRef(0);
+  const [settings, setSettings] = useState({});
+  const [notification, setNotification] = useState({ message: '', type: '' });
+  const [isDoctorConnected, setIsDoctorConnected] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+  const [showSplash, setShowSplash] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('medops-theme');
+    return savedTheme === 'dark';
+  });
+  
+  // Global walk-in notifications state
+  const [walkinNotifications, setWalkinNotifications] = useState([]);
+
+  // Global automatic reconnection state
+  const [autoReconnectEnabled, setAutoReconnectEnabled] = useState(true);
+  const [connectionLossCount, setConnectionLossCount] = useState(0);
+  const [lastConnectionCheck, setLastConnectionCheck] = useState(Date.now());
+  const maxAutoReconnectAttempts = 10; // Limit automatic reconnection attempts
+  const retryingRef = useRef(false);
+  const healthCheckIntervalRef = useRef(null);
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.body.classList.add('dark-mode');
+      localStorage.setItem('medops-theme', 'dark');
+    } else {
+      document.body.classList.remove('dark-mode');
+      localStorage.setItem('medops-theme', 'light');
+    }
+  }, [isDarkMode]);
+
+  // Initialize focus management
+  useEffect(() => {
+    initializeFocusManagement();
+  }, []);
+
+  // Global loading state reset handler
+  useEffect(() => {
+    const handleForceResetLoadingStates = () => {
+      console.log('[DEBUG] App.js: Force resetting global loading states');
+      // Reset any global loading states that might be stuck
+      if (window.navigationLoadingService) {
+        window.navigationLoadingService.resetAllLoadingStates();
+      }
+    };
+
+    const handleUnlockInputs = () => {
+      console.log('[DEBUG] App.js: Handling unlock inputs event');
+      // Don't call the function again to avoid infinite recursion
+      // The event is just for notification purposes
+    };
+
+    window.addEventListener('forceResetLoadingStates', handleForceResetLoadingStates);
+    window.addEventListener('unlockInputs', handleUnlockInputs);
+    
+    return () => {
+      window.removeEventListener('forceResetLoadingStates', handleForceResetLoadingStates);
+      window.removeEventListener('unlockInputs', handleUnlockInputs);
+    };
+  }, []);
+
+  // Global loading state monitor - automatically reset stuck states
+  useEffect(() => {
+    const checkForStuckLoadingStates = () => {
+      // Check if any loading states have been stuck for too long
+      if (window.navigationLoadingService && window.navigationLoadingService.isAnyPageLoading()) {
+        console.log('[DEBUG] App.js: Detected stuck loading states, attempting reset');
+        window.navigationLoadingService.resetAllLoadingStates();
+      }
+    };
+
+    // Check every 10 seconds for stuck loading states
+    const interval = setInterval(checkForStuckLoadingStates, 10000);
+    
+    return () => {
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Input lock detection and auto-unlock
+  useEffect(() => {
+    const checkForLockedInputs = () => {
+      // Check if any inputs are locked
+      const allInputs = document.querySelectorAll('input, textarea, select');
+      let lockedInputsFound = false;
+      
+      allInputs.forEach(input => {
+        const computedStyle = window.getComputedStyle(input);
+        if (computedStyle.pointerEvents === 'none' || 
+            input.hasAttribute('disabled') || 
+            input.hasAttribute('readonly')) {
+          lockedInputsFound = true;
+        }
+      });
+      
+      // If locked inputs are found and no loading states are active, unlock them
+      if (lockedInputsFound && window.navigationLoadingService && !window.navigationLoadingService.isAnyPageLoading()) {
+        console.log('[DEBUG] App.js: Detected locked inputs, attempting unlock');
+        if (window.unlockAllInputs) {
+          window.unlockAllInputs();
+        }
+      }
+    };
+
+    // Check every 5 seconds for locked inputs
+    const interval = setInterval(checkForLockedInputs, 5000);
+    
+    return () => {
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Add manual reset function to window for debugging
+  useEffect(() => {
+    window.resetAllLoadingStates = () => {
+      console.log('[DEBUG] Manual reset of all loading states');
+      if (window.navigationLoadingService) {
+        window.navigationLoadingService.resetAllLoadingStates();
+      }
+      window.dispatchEvent(new CustomEvent('forceResetLoadingStates'));
+    };
+
+    // Function to check for and close any active modals
+    window.closeActiveModals = () => {
+      console.log('[DEBUG] Checking for active modals');
+      
+      // Check for any elements with modal-like properties
+      const modalElements = document.querySelectorAll('[class*="modal"], [class*="Modal"], [style*="z-index: 1000"], [style*="z-index: 10000"]');
+      let modalsClosed = 0;
+      modalElements.forEach(modal => {
+        const computedStyle = window.getComputedStyle(modal);
+        if (computedStyle.zIndex > 1000 || modal.classList.contains('modal') || modal.classList.contains('Modal')) {
+          modal.style.display = 'none';
+          modalsClosed++;
+          console.log('[DEBUG] Closed modal element:', modal);
+        }
+      });
+      console.log(`[DEBUG] Closed ${modalsClosed} modal elements`);
+      
+      // Check for any backdrop elements
+      const backdropElements = document.querySelectorAll('[class*="backdrop"], [class*="overlay"]');
+      let backdropsRemoved = 0;
+      backdropElements.forEach(backdrop => {
+        backdrop.style.display = 'none';
+        backdropsRemoved++;
+        console.log('[DEBUG] Removed backdrop element:', backdrop);
+      });
+      console.log(`[DEBUG] Removed ${backdropsRemoved} backdrop elements`);
+    };
+
+    // Function to remove any active dropdowns or suggestion elements
+    window.removeActiveDropdowns = () => {
+      console.log('[DEBUG] Checking for active dropdowns and suggestion elements');
+      
+      // Remove any suggestion dropdowns
+      const suggestionDropdowns = document.querySelectorAll('.suggestion-dropdown');
+      let dropdownsRemoved = 0;
+      suggestionDropdowns.forEach(dropdown => {
+        dropdown.style.display = 'none';
+        dropdownsRemoved++;
+        console.log('[DEBUG] Removed suggestion dropdown:', dropdown);
+      });
+      console.log(`[DEBUG] Removed ${dropdownsRemoved} suggestion dropdowns`);
+      
+      // Remove any dropdown containers with absolute positioning
+      const dropdownContainers = document.querySelectorAll('.dropdown-container > div[style*="position: absolute"]');
+      let containersRemoved = 0;
+      dropdownContainers.forEach(container => {
+        container.style.display = 'none';
+        containersRemoved++;
+        console.log('[DEBUG] Removed dropdown container:', container);
+      });
+      console.log(`[DEBUG] Removed ${containersRemoved} dropdown containers`);
+      
+      // Remove any elements with high z-index that are positioned absolutely
+      const highZIndexElements = document.querySelectorAll('*');
+      let highZIndexRemoved = 0;
+      highZIndexElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.zIndex === '9999' && computedStyle.position === 'absolute') {
+          element.style.display = 'none';
+          highZIndexRemoved++;
+          console.log('[DEBUG] Removed high z-index absolute element:', element);
+        }
+      });
+      console.log(`[DEBUG] Removed ${highZIndexRemoved} high z-index absolute elements`);
+    };
+
+    // Enhanced unlock function that handles the specific blocking card element
+    window.unlockAllInputs = () => {
+      console.log('[DEBUG] Unlocking all inputs globally');
+      if (window.navigationLoadingService) {
+        window.navigationLoadingService.resetAllLoadingStates();
+      }
+      
+      // Close any active modals first
+      window.closeActiveModals();
+      
+      // Remove any active dropdowns
+      window.removeActiveDropdowns();
+      
+      // First, handle the specific blocking card element with z-index 9999
+      const blockingCards = document.querySelectorAll('.card[style*="z-index: 9999"], .card[style*="z-index:9999"]');
+      let blockingCardsFixed = 0;
+      blockingCards.forEach(card => {
+        const computedStyle = window.getComputedStyle(card);
+        if (computedStyle.zIndex === '9999') {
+          card.style.zIndex = 'auto';
+          card.style.position = 'static';
+          blockingCardsFixed++;
+          console.log('[DEBUG] Fixed blocking card element:', card);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${blockingCardsFixed} blocking card elements`);
+      
+      // Remove any elements with high z-index that might be blocking
+      const allElements = document.querySelectorAll('*');
+      let highZIndexElementsFixed = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.zIndex === '9999' && 
+            (element.tagName === 'DIV' || element.classList.contains('card'))) {
+          element.style.zIndex = 'auto';
+          element.style.position = 'static';
+          highZIndexElementsFixed++;
+          console.log('[DEBUG] Fixed high z-index element:', element);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${highZIndexElementsFixed} high z-index elements`);
+      
+      // Fix pointer-events on all elements
+      let elementsWithPointerEventsNone = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.pointerEvents === 'none') {
+          element.style.pointerEvents = 'auto';
+          elementsWithPointerEventsNone++;
+        }
+      });
+      console.log(`[DEBUG] Fixed pointer-events on ${elementsWithPointerEventsNone} elements`);
+      
+      // Fix input attributes
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let disabledInputsFixed = 0;
+      let readonlyInputsFixed = 0;
+      allInputs.forEach(input => {
+        if (input.hasAttribute('disabled')) {
+          input.removeAttribute('disabled');
+          disabledInputsFixed++;
+        }
+        if (input.hasAttribute('readonly')) {
+          input.removeAttribute('readonly');
+          readonlyInputsFixed++;
+        }
+        if (input.style.pointerEvents === 'none') {
+          input.style.pointerEvents = 'auto';
+        }
+        if (input.style.userSelect === 'none') {
+          input.style.userSelect = 'auto';
+        }
+      });
+      console.log(`[DEBUG] Fixed ${disabledInputsFixed} disabled inputs and ${readonlyInputsFixed} readonly inputs`);
+      
+      // Remove any fixed position overlays with high z-index
+      const overlays = document.querySelectorAll('[style*="position: fixed"], [style*="position:fixed"]');
+      let overlaysRemoved = 0;
+      overlays.forEach(overlay => {
+        const computedStyle = window.getComputedStyle(overlay);
+        if (computedStyle.zIndex > 1000) {
+          overlay.style.display = 'none';
+          overlaysRemoved++;
+          console.log('[DEBUG] Removed blocking overlay:', overlay);
+        }
+      });
+      console.log(`[DEBUG] Removed ${overlaysRemoved} blocking overlays`);
+      
+      // Reset body and document element styles
+      document.body.style.pointerEvents = 'auto';
+      document.documentElement.style.pointerEvents = 'auto';
+      document.body.style.userSelect = 'auto';
+      document.documentElement.style.userSelect = 'auto';
+      
+      // Force a reflow to ensure changes take effect
+      document.body.offsetHeight;
+      
+      window.dispatchEvent(new CustomEvent('forceResetLoadingStates'));
+      console.log('[DEBUG] Input unlock completed');
+    };
+
+    // Add function to test input interactivity
+    window.testInputInteractivity = () => {
+      console.log('[DEBUG] Testing input interactivity...');
+      const allInputs = document.querySelectorAll('input, textarea, select');
+      let testResults = [];
+      
+      allInputs.forEach((input, index) => {
+        const testResult = {
+          index,
+          tagName: input.tagName,
+          type: input.type,
+          name: input.name,
+          id: input.id,
+          className: input.className,
+          tests: {}
+        };
+        
+        // Test 1: Can we focus the input?
+        try {
+          input.focus();
+          testResult.tests.canFocus = document.activeElement === input;
+          input.blur();
+        } catch (e) {
+          testResult.tests.canFocus = false;
+        }
+        
+        // Test 2: Can we click the input?
+        try {
+          const clickEvent = new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window
+          });
+          const clicked = input.dispatchEvent(clickEvent);
+          testResult.tests.canClick = clicked;
+        } catch (e) {
+          testResult.tests.canClick = false;
+        }
+        
+        // Test 3: Can we type in the input?
+        try {
+          if (input.type !== 'button' && input.type !== 'submit' && input.type !== 'reset') {
+            input.focus();
+            const keyEvent = new KeyboardEvent('keydown', {
+              key: 'a',
+              code: 'KeyA',
+              bubbles: true,
+              cancelable: true
+            });
+            const keyPressed = input.dispatchEvent(keyEvent);
+            testResult.tests.canType = keyPressed;
+            input.blur();
+          } else {
+            testResult.tests.canType = 'N/A';
+          }
+        } catch (e) {
+          testResult.tests.canType = false;
+        }
+        
+        // Test 4: Check if input is actually visible and accessible
+        const rect = input.getBoundingClientRect();
+        testResult.tests.isVisible = rect.width > 0 && rect.height > 0;
+        testResult.tests.isInViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+        
+        // Test 5: Check computed styles
+        const computedStyle = window.getComputedStyle(input);
+        testResult.tests.styles = {
+          pointerEvents: computedStyle.pointerEvents,
+          userSelect: computedStyle.userSelect,
+          visibility: computedStyle.visibility,
+          display: computedStyle.display,
+          opacity: computedStyle.opacity,
+          cursor: computedStyle.cursor
+        };
+        
+        testResults.push(testResult);
+      });
+      
+      console.log('[DEBUG] Input interactivity test results:', testResults);
+      
+      // Find inputs that are not interactive
+      const nonInteractiveInputs = testResults.filter(result => 
+        !result.tests.canFocus || 
+        !result.tests.canClick || 
+        (result.tests.canType !== 'N/A' && !result.tests.canType) ||
+        !result.tests.isVisible
+      );
+      
+      if (nonInteractiveInputs.length > 0) {
+        console.log('[DEBUG] Found non-interactive inputs:', nonInteractiveInputs);
+      }
+      
+      return testResults;
+    };
+
+    // Add function to check input status
+    window.checkInputStatus = () => {
+      console.log('[DEBUG] Checking input status...');
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let lockedInputs = [];
+      
+      allInputs.forEach((input, index) => {
+        const computedStyle = window.getComputedStyle(input);
+        const isDisabled = input.hasAttribute('disabled');
+        const isReadonly = input.hasAttribute('readonly');
+        const hasPointerEventsNone = computedStyle.pointerEvents === 'none';
+        const hasUserSelectNone = computedStyle.userSelect === 'none';
+        const isVisible = computedStyle.visibility !== 'hidden' && computedStyle.display !== 'none';
+        const isFocusable = input.tabIndex >= 0 || input.tagName === 'INPUT' || input.tagName === 'TEXTAREA' || input.tagName === 'SELECT';
+        const hasFocus = document.activeElement === input;
+        const isClickable = computedStyle.cursor !== 'not-allowed';
+        
+        // Check for more subtle blocking mechanisms
+        const parentComputedStyle = input.parentElement ? window.getComputedStyle(input.parentElement) : null;
+        const parentPointerEvents = parentComputedStyle ? parentComputedStyle.pointerEvents : 'auto';
+        const parentVisibility = parentComputedStyle ? parentComputedStyle.visibility : 'visible';
+        
+        // Check if input is actually interactive
+        let isInteractive = true;
+        try {
+          // Try to focus the input
+          input.focus();
+          const focused = document.activeElement === input;
+          input.blur();
+          isInteractive = focused;
+        } catch (e) {
+          isInteractive = false;
+        }
+        
+        if (isDisabled || isReadonly || hasPointerEventsNone || hasUserSelectNone || !isVisible || !isFocusable || !isClickable || parentPointerEvents === 'none' || parentVisibility === 'hidden' || !isInteractive) {
+          lockedInputs.push({
+            index,
+            tagName: input.tagName,
+            disabled: isDisabled,
+            readonly: isReadonly,
+            pointerEvents: computedStyle.pointerEvents,
+            userSelect: computedStyle.userSelect,
+            visibility: computedStyle.visibility,
+            display: computedStyle.display,
+            tabIndex: input.tabIndex,
+            hasFocus: hasFocus,
+            cursor: computedStyle.cursor,
+            parentPointerEvents: parentPointerEvents,
+            parentVisibility: parentVisibility,
+            isInteractive: isInteractive,
+            element: input
+          });
+        }
+      });
+      
+      console.log(`[DEBUG] Found ${lockedInputs.length} locked inputs:`, lockedInputs);
+      
+      // Also check for any global blocking elements
+      const blockingElements = [];
+      const allElements = document.querySelectorAll('*');
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.position === 'fixed' && 
+            computedStyle.zIndex > 1000 && 
+            (computedStyle.pointerEvents === 'none' || computedStyle.pointerEvents === 'auto')) {
+          blockingElements.push({
+            tagName: element.tagName,
+            className: element.className,
+            id: element.id,
+            zIndex: computedStyle.zIndex,
+            pointerEvents: computedStyle.pointerEvents,
+            position: computedStyle.position,
+            top: computedStyle.top,
+            left: computedStyle.left,
+            width: computedStyle.width,
+            height: computedStyle.height
+          });
+        }
+      });
+      
+      if (blockingElements.length > 0) {
+        console.log(`[DEBUG] Found ${blockingElements.length} potential blocking elements:`, blockingElements);
+      }
+      
+      return lockedInputs;
+    };
+
+    // Add keyboard shortcut for manual unlock (Ctrl+Shift+U)
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'U') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual unlock shortcut triggered');
+        if (window.unlockAllInputs) {
+          window.unlockAllInputs();
+        }
+      }
+      
+      // Add keyboard shortcut for testing input interactivity (Ctrl+Shift+T)
+      if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual input test shortcut triggered');
+        if (window.testInputInteractivity) {
+          window.testInputInteractivity();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      delete window.resetAllLoadingStates;
+      delete window.unlockAllInputs;
+      delete window.checkInputStatus; // Clean up the new function
+      delete window.testInputInteractivity; // Clean up the new function
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  // Function to check for and close any active modals
+  window.closeActiveModals = () => {
+    console.log('[DEBUG] Checking for active modals');
+    
+    // Check for any elements with modal-like properties
+    const modalElements = document.querySelectorAll('[class*="modal"], [class*="Modal"], [style*="z-index: 1000"], [style*="z-index: 10000"]');
+    let modalsClosed = 0;
+    modalElements.forEach(modal => {
+      const computedStyle = window.getComputedStyle(modal);
+      if (computedStyle.zIndex > 1000 || modal.classList.contains('modal') || modal.classList.contains('Modal')) {
+        modal.style.display = 'none';
+        modalsClosed++;
+        console.log('[DEBUG] Closed modal element:', modal);
+      }
+    });
+    console.log(`[DEBUG] Closed ${modalsClosed} modal elements`);
+    
+    // Check for any backdrop elements
+    const backdropElements = document.querySelectorAll('[class*="backdrop"], [class*="overlay"]');
+    let backdropsRemoved = 0;
+    backdropElements.forEach(backdrop => {
+      backdrop.style.display = 'none';
+      backdropsRemoved++;
+      console.log('[DEBUG] Removed backdrop element:', backdrop);
+    });
+    console.log(`[DEBUG] Removed ${backdropsRemoved} backdrop elements`);
+  };
+
+  // Function to remove any active dropdowns or suggestion elements
+  window.removeActiveDropdowns = () => {
+    console.log('[DEBUG] Checking for active dropdowns and suggestion elements');
+    
+    // Remove any suggestion dropdowns
+    const suggestionDropdowns = document.querySelectorAll('.suggestion-dropdown');
+    let dropdownsRemoved = 0;
+    suggestionDropdowns.forEach(dropdown => {
+      dropdown.style.display = 'none';
+      dropdownsRemoved++;
+      console.log('[DEBUG] Removed suggestion dropdown:', dropdown);
+    });
+    console.log(`[DEBUG] Removed ${dropdownsRemoved} suggestion dropdowns`);
+    
+    // Remove any dropdown containers with absolute positioning
+    const dropdownContainers = document.querySelectorAll('.dropdown-container > div[style*="position: absolute"]');
+    let containersRemoved = 0;
+    dropdownContainers.forEach(container => {
+      container.style.display = 'none';
+      containersRemoved++;
+      console.log('[DEBUG] Removed dropdown container:', container);
+    });
+    console.log(`[DEBUG] Removed ${containersRemoved} dropdown containers`);
+    
+    // Remove any elements with high z-index that are positioned absolutely
+    const highZIndexElements = document.querySelectorAll('*');
+    let highZIndexRemoved = 0;
+    highZIndexElements.forEach(element => {
+      const computedStyle = window.getComputedStyle(element);
+      if (computedStyle.zIndex === '9999' && computedStyle.position === 'absolute') {
+        element.style.display = 'none';
+        highZIndexRemoved++;
+        console.log('[DEBUG] Removed high z-index absolute element:', element);
+      }
+    });
+    console.log(`[DEBUG] Removed ${highZIndexRemoved} high z-index absolute elements`);
+  };
+
+  // Enhanced unlock function that handles the specific blocking card element
+  window.unlockAllInputs = () => {
+    console.log('[DEBUG] Unlocking all inputs globally');
+    if (window.navigationLoadingService) {
+      window.navigationLoadingService.resetAllLoadingStates();
+    }
+    
+    // Close any active modals first
+    window.closeActiveModals();
+    
+    // Remove any active dropdowns
+    window.removeActiveDropdowns();
+      
+      // First, handle the specific blocking card element with z-index 9999
+      const blockingCards = document.querySelectorAll('.card[style*="z-index: 9999"], .card[style*="z-index:9999"]');
+      let blockingCardsFixed = 0;
+      blockingCards.forEach(card => {
+        const computedStyle = window.getComputedStyle(card);
+        if (computedStyle.zIndex === '9999') {
+          card.style.zIndex = 'auto';
+          card.style.position = 'static';
+          blockingCardsFixed++;
+          console.log('[DEBUG] Fixed blocking card element:', card);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${blockingCardsFixed} blocking card elements`);
+      
+      // Remove any elements with high z-index that might be blocking
+      const allElements = document.querySelectorAll('*');
+      let highZIndexElementsFixed = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.zIndex === '9999' && 
+            (element.tagName === 'DIV' || element.classList.contains('card'))) {
+          element.style.zIndex = 'auto';
+          element.style.position = 'static';
+          highZIndexElementsFixed++;
+          console.log('[DEBUG] Fixed high z-index element:', element);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${highZIndexElementsFixed} high z-index elements`);
+      
+      // Fix pointer-events on all elements
+      let elementsWithPointerEventsNone = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.pointerEvents === 'none') {
+          element.style.pointerEvents = 'auto';
+          elementsWithPointerEventsNone++;
+        }
+      });
+      console.log(`[DEBUG] Fixed pointer-events on ${elementsWithPointerEventsNone} elements`);
+      
+      // Fix input attributes
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let disabledInputsFixed = 0;
+      let readonlyInputsFixed = 0;
+      allInputs.forEach(input => {
+        if (input.hasAttribute('disabled')) {
+          input.removeAttribute('disabled');
+          disabledInputsFixed++;
+        }
+        if (input.hasAttribute('readonly')) {
+          input.removeAttribute('readonly');
+          readonlyInputsFixed++;
+        }
+        if (input.style.pointerEvents === 'none') {
+          input.style.pointerEvents = 'auto';
+        }
+        if (input.style.userSelect === 'none') {
+          input.style.userSelect = 'auto';
+        }
+      });
+      console.log(`[DEBUG] Fixed ${disabledInputsFixed} disabled inputs and ${readonlyInputsFixed} readonly inputs`);
+      
+      // Remove any fixed position overlays with high z-index
+      const overlays = document.querySelectorAll('[style*="position: fixed"], [style*="position:fixed"]');
+      let overlaysRemoved = 0;
+      overlays.forEach(overlay => {
+        const computedStyle = window.getComputedStyle(overlay);
+        if (computedStyle.zIndex > 1000) {
+          overlay.style.display = 'none';
+          overlaysRemoved++;
+          console.log('[DEBUG] Removed blocking overlay:', overlay);
+        }
+      });
+      console.log(`[DEBUG] Removed ${overlaysRemoved} blocking overlays`);
+      
+      // Reset body and document element styles
+      document.body.style.pointerEvents = 'auto';
+      document.documentElement.style.pointerEvents = 'auto';
+      document.body.style.userSelect = 'auto';
+      document.documentElement.style.userSelect = 'auto';
+      
+      // Force a reflow to ensure changes take effect
+      document.body.offsetHeight;
+      
+      window.dispatchEvent(new CustomEvent('forceResetLoadingStates'));
+      console.log('[DEBUG] Input unlock completed');
+    };
+
+    // Add function to test input interactivity
+    window.testInputInteractivity = () => {
+      console.log('[DEBUG] Testing input interactivity...');
+      const allInputs = document.querySelectorAll('input, textarea, select');
+      let testResults = [];
+      
+      allInputs.forEach((input, index) => {
+        const testResult = {
+          index,
+          tagName: input.tagName,
+          type: input.type,
+          name: input.name,
+          id: input.id,
+          className: input.className,
+          tests: {}
+        };
+        
+        // Test 1: Can we focus the input?
+        try {
+          input.focus();
+          testResult.tests.canFocus = document.activeElement === input;
+          input.blur();
+        } catch (e) {
+          testResult.tests.canFocus = false;
+        }
+        
+        // Test 2: Can we click the input?
+        try {
+          const clickEvent = new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window
+          });
+          const clicked = input.dispatchEvent(clickEvent);
+          testResult.tests.canClick = clicked;
+        } catch (e) {
+          testResult.tests.canClick = false;
+        }
+        
+        // Test 3: Can we type in the input?
+        try {
+          if (input.type !== 'button' && input.type !== 'submit' && input.type !== 'reset') {
+            input.focus();
+            const keyEvent = new KeyboardEvent('keydown', {
+              key: 'a',
+              code: 'KeyA',
+              bubbles: true,
+              cancelable: true
+            });
+            const keyPressed = input.dispatchEvent(keyEvent);
+            testResult.tests.canType = keyPressed;
+            input.blur();
+          } else {
+            testResult.tests.canType = 'N/A';
+          }
+        } catch (e) {
+          testResult.tests.canType = false;
+        }
+        
+        // Test 4: Check if input is actually visible and accessible
+        const rect = input.getBoundingClientRect();
+        testResult.tests.isVisible = rect.width > 0 && rect.height > 0;
+        testResult.tests.isInViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+        
+        // Test 5: Check computed styles
+        const computedStyle = window.getComputedStyle(input);
+        testResult.tests.styles = {
+          pointerEvents: computedStyle.pointerEvents,
+          userSelect: computedStyle.userSelect,
+          visibility: computedStyle.visibility,
+          display: computedStyle.display,
+          opacity: computedStyle.opacity,
+          cursor: computedStyle.cursor
+        };
+        
+        testResults.push(testResult);
+      });
+      
+      console.log('[DEBUG] Input interactivity test results:', testResults);
+      
+      // Find inputs that are not interactive
+      const nonInteractiveInputs = testResults.filter(result => 
+        !result.tests.canFocus || 
+        !result.tests.canClick || 
+        (result.tests.canType !== 'N/A' && !result.tests.canType) ||
+        !result.tests.isVisible
+      );
+      
+      if (nonInteractiveInputs.length > 0) {
+        console.log('[DEBUG] Found non-interactive inputs:', nonInteractiveInputs);
+      }
+      
+      return testResults;
+    };
+
+    // Add function to check input status
+    window.checkInputStatus = () => {
+      console.log('[DEBUG] Checking input status...');
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let lockedInputs = [];
+      
+      allInputs.forEach((input, index) => {
+        const computedStyle = window.getComputedStyle(input);
+        const isDisabled = input.hasAttribute('disabled');
+        const isReadonly = input.hasAttribute('readonly');
+        const hasPointerEventsNone = computedStyle.pointerEvents === 'none';
+        const hasUserSelectNone = computedStyle.userSelect === 'none';
+        const isVisible = computedStyle.visibility !== 'hidden' && computedStyle.display !== 'none';
+        const isFocusable = input.tabIndex >= 0 || input.tagName === 'INPUT' || input.tagName === 'TEXTAREA' || input.tagName === 'SELECT';
+        const hasFocus = document.activeElement === input;
+        const isClickable = computedStyle.cursor !== 'not-allowed';
+        
+        // Check for more subtle blocking mechanisms
+        const parentComputedStyle = input.parentElement ? window.getComputedStyle(input.parentElement) : null;
+        const parentPointerEvents = parentComputedStyle ? parentComputedStyle.pointerEvents : 'auto';
+        const parentVisibility = parentComputedStyle ? parentComputedStyle.visibility : 'visible';
+        
+        // Check if input is actually interactive
+        let isInteractive = true;
+        try {
+          // Try to focus the input
+          input.focus();
+          const focused = document.activeElement === input;
+          input.blur();
+          isInteractive = focused;
+        } catch (e) {
+          isInteractive = false;
+        }
+        
+        if (isDisabled || isReadonly || hasPointerEventsNone || hasUserSelectNone || !isVisible || !isFocusable || !isClickable || parentPointerEvents === 'none' || parentVisibility === 'hidden' || !isInteractive) {
+          lockedInputs.push({
+            index,
+            tagName: input.tagName,
+            disabled: isDisabled,
+            readonly: isReadonly,
+            pointerEvents: computedStyle.pointerEvents,
+            userSelect: computedStyle.userSelect,
+            visibility: computedStyle.visibility,
+            display: computedStyle.display,
+            tabIndex: input.tabIndex,
+            hasFocus: hasFocus,
+            cursor: computedStyle.cursor,
+            parentPointerEvents: parentPointerEvents,
+            parentVisibility: parentVisibility,
+            isInteractive: isInteractive,
+            element: input
+          });
+        }
+      });
+      
+      console.log(`[DEBUG] Found ${lockedInputs.length} locked inputs:`, lockedInputs);
+      
+      // Also check for any global blocking elements
+      const blockingElements = [];
+      const allElements = document.querySelectorAll('*');
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.position === 'fixed' && 
+            computedStyle.zIndex > 1000 && 
+            (computedStyle.pointerEvents === 'none' || computedStyle.pointerEvents === 'auto')) {
+          blockingElements.push({
+            tagName: element.tagName,
+            className: element.className,
+            id: element.id,
+            zIndex: computedStyle.zIndex,
+            pointerEvents: computedStyle.pointerEvents,
+            position: computedStyle.position,
+            top: computedStyle.top,
+            left: computedStyle.left,
+            width: computedStyle.width,
+            height: computedStyle.height
+          });
+        }
+      });
+      
+      if (blockingElements.length > 0) {
+        console.log(`[DEBUG] Found ${blockingElements.length} potential blocking elements:`, blockingElements);
+      }
+      
+      return lockedInputs;
+    };
+
+    // Add keyboard shortcut for manual unlock (Ctrl+Shift+U)
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'U') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual unlock shortcut triggered');
+        if (window.unlockAllInputs) {
+          window.unlockAllInputs();
+        }
+      }
+      
+      // Add keyboard shortcut for testing input interactivity (Ctrl+Shift+T)
+      if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual input test shortcut triggered');
+        if (window.testInputInteractivity) {
+          window.testInputInteractivity();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      delete window.resetAllLoadingStates;
+      delete window.unlockAllInputs;
+      delete window.checkInputStatus; // Clean up the new function
+      delete window.testInputInteractivity; // Clean up the new function
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  // Function to remove any active dropdowns or suggestion elements
+  window.removeActiveDropdowns = () => {
+    console.log('[DEBUG] Checking for active dropdowns and suggestion elements');
+    
+    // Remove any suggestion dropdowns
+    const suggestionDropdowns = document.querySelectorAll('.suggestion-dropdown');
+    let dropdownsRemoved = 0;
+    suggestionDropdowns.forEach(dropdown => {
+      dropdown.style.display = 'none';
+      dropdownsRemoved++;
+      console.log('[DEBUG] Removed suggestion dropdown:', dropdown);
+    });
+    console.log(`[DEBUG] Removed ${dropdownsRemoved} suggestion dropdowns`);
+    
+    // Remove any dropdown containers with absolute positioning
+    const dropdownContainers = document.querySelectorAll('.dropdown-container > div[style*="position: absolute"]');
+    let containersRemoved = 0;
+    dropdownContainers.forEach(container => {
+      container.style.display = 'none';
+      containersRemoved++;
+      console.log('[DEBUG] Removed dropdown container:', container);
+    });
+    console.log(`[DEBUG] Removed ${containersRemoved} dropdown containers`);
+    
+    // Remove any elements with high z-index that are positioned absolutely
+    const highZIndexElements = document.querySelectorAll('*');
+    let highZIndexRemoved = 0;
+    highZIndexElements.forEach(element => {
+      const computedStyle = window.getComputedStyle(element);
+      if (computedStyle.zIndex === '9999' && computedStyle.position === 'absolute') {
+        element.style.display = 'none';
+        highZIndexRemoved++;
+        console.log('[DEBUG] Removed high z-index absolute element:', element);
+      }
+    });
+    console.log(`[DEBUG] Removed ${highZIndexRemoved} high z-index absolute elements`);
+  };
+
+  // Enhanced unlock function that handles the specific blocking card element
+  window.unlockAllInputs = () => {
+    console.log('[DEBUG] Unlocking all inputs globally');
+    if (window.navigationLoadingService) {
+      window.navigationLoadingService.resetAllLoadingStates();
+    }
+    
+    // Close any active modals first
+    window.closeActiveModals();
+    
+    // Remove any active dropdowns
+    window.removeActiveDropdowns();
+      
+      // First, handle the specific blocking card element with z-index 9999
+      const blockingCards = document.querySelectorAll('.card[style*="z-index: 9999"], .card[style*="z-index:9999"]');
+      let blockingCardsFixed = 0;
+      blockingCards.forEach(card => {
+        const computedStyle = window.getComputedStyle(card);
+        if (computedStyle.zIndex === '9999') {
+          card.style.zIndex = 'auto';
+          card.style.position = 'static';
+          blockingCardsFixed++;
+          console.log('[DEBUG] Fixed blocking card element:', card);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${blockingCardsFixed} blocking card elements`);
+      
+      // Remove any elements with high z-index that might be blocking
+      const allElements = document.querySelectorAll('*');
+      let highZIndexElementsFixed = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.zIndex === '9999' && 
+            (element.tagName === 'DIV' || element.classList.contains('card'))) {
+          element.style.zIndex = 'auto';
+          element.style.position = 'static';
+          highZIndexElementsFixed++;
+          console.log('[DEBUG] Fixed high z-index element:', element);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${highZIndexElementsFixed} high z-index elements`);
+      
+      // Fix pointer-events on all elements
+      let elementsWithPointerEventsNone = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.pointerEvents === 'none') {
+          element.style.pointerEvents = 'auto';
+          elementsWithPointerEventsNone++;
+        }
+      });
+      console.log(`[DEBUG] Fixed pointer-events on ${elementsWithPointerEventsNone} elements`);
+      
+      // Fix input attributes
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let disabledInputsFixed = 0;
+      let readonlyInputsFixed = 0;
+      allInputs.forEach(input => {
+        if (input.hasAttribute('disabled')) {
+          input.removeAttribute('disabled');
+          disabledInputsFixed++;
+        }
+        if (input.hasAttribute('readonly')) {
+          input.removeAttribute('readonly');
+          readonlyInputsFixed++;
+        }
+        if (input.style.pointerEvents === 'none') {
+          input.style.pointerEvents = 'auto';
+        }
+        if (input.style.userSelect === 'none') {
+          input.style.userSelect = 'auto';
+        }
+      });
+      console.log(`[DEBUG] Fixed ${disabledInputsFixed} disabled inputs and ${readonlyInputsFixed} readonly inputs`);
+      
+      // Remove any fixed position overlays with high z-index
+      const overlays = document.querySelectorAll('[style*="position: fixed"], [style*="position:fixed"]');
+      let overlaysRemoved = 0;
+      overlays.forEach(overlay => {
+        const computedStyle = window.getComputedStyle(overlay);
+        if (computedStyle.zIndex > 1000) {
+          overlay.style.display = 'none';
+          overlaysRemoved++;
+          console.log('[DEBUG] Removed blocking overlay:', overlay);
+        }
+      });
+      console.log(`[DEBUG] Removed ${overlaysRemoved} blocking overlays`);
+      
+      // Reset body and document element styles
+      document.body.style.pointerEvents = 'auto';
+      document.documentElement.style.pointerEvents = 'auto';
+      document.body.style.userSelect = 'auto';
+      document.documentElement.style.userSelect = 'auto';
+      
+      // Force a reflow to ensure changes take effect
+      document.body.offsetHeight;
+      
+      window.dispatchEvent(new CustomEvent('forceResetLoadingStates'));
+      console.log('[DEBUG] Input unlock completed');
+    };
+
+    // Add function to test input interactivity
+    window.testInputInteractivity = () => {
+      console.log('[DEBUG] Testing input interactivity...');
+      const allInputs = document.querySelectorAll('input, textarea, select');
+      let testResults = [];
+      
+      allInputs.forEach((input, index) => {
+        const testResult = {
+          index,
+          tagName: input.tagName,
+          type: input.type,
+          name: input.name,
+          id: input.id,
+          className: input.className,
+          tests: {}
+        };
+        
+        // Test 1: Can we focus the input?
+        try {
+          input.focus();
+          testResult.tests.canFocus = document.activeElement === input;
+          input.blur();
+        } catch (e) {
+          testResult.tests.canFocus = false;
+        }
+        
+        // Test 2: Can we click the input?
+        try {
+          const clickEvent = new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window
+          });
+          const clicked = input.dispatchEvent(clickEvent);
+          testResult.tests.canClick = clicked;
+        } catch (e) {
+          testResult.tests.canClick = false;
+        }
+        
+        // Test 3: Can we type in the input?
+        try {
+          if (input.type !== 'button' && input.type !== 'submit' && input.type !== 'reset') {
+            input.focus();
+            const keyEvent = new KeyboardEvent('keydown', {
+              key: 'a',
+              code: 'KeyA',
+              bubbles: true,
+              cancelable: true
+            });
+            const keyPressed = input.dispatchEvent(keyEvent);
+            testResult.tests.canType = keyPressed;
+            input.blur();
+          } else {
+            testResult.tests.canType = 'N/A';
+          }
+        } catch (e) {
+          testResult.tests.canType = false;
+        }
+        
+        // Test 4: Check if input is actually visible and accessible
+        const rect = input.getBoundingClientRect();
+        testResult.tests.isVisible = rect.width > 0 && rect.height > 0;
+        testResult.tests.isInViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+        
+        // Test 5: Check computed styles
+        const computedStyle = window.getComputedStyle(input);
+        testResult.tests.styles = {
+          pointerEvents: computedStyle.pointerEvents,
+          userSelect: computedStyle.userSelect,
+          visibility: computedStyle.visibility,
+          display: computedStyle.display,
+          opacity: computedStyle.opacity,
+          cursor: computedStyle.cursor
+        };
+        
+        testResults.push(testResult);
+      });
+      
+      console.log('[DEBUG] Input interactivity test results:', testResults);
+      
+      // Find inputs that are not interactive
+      const nonInteractiveInputs = testResults.filter(result => 
+        !result.tests.canFocus || 
+        !result.tests.canClick || 
+        (result.tests.canType !== 'N/A' && !result.tests.canType) ||
+        !result.tests.isVisible
+      );
+      
+      if (nonInteractiveInputs.length > 0) {
+        console.log('[DEBUG] Found non-interactive inputs:', nonInteractiveInputs);
+      }
+      
+      return testResults;
+    };
+
+    // Add function to check input status
+    window.checkInputStatus = () => {
+      console.log('[DEBUG] Checking input status...');
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let lockedInputs = [];
+      
+      allInputs.forEach((input, index) => {
+        const computedStyle = window.getComputedStyle(input);
+        const isDisabled = input.hasAttribute('disabled');
+        const isReadonly = input.hasAttribute('readonly');
+        const hasPointerEventsNone = computedStyle.pointerEvents === 'none';
+        const hasUserSelectNone = computedStyle.userSelect === 'none';
+        const isVisible = computedStyle.visibility !== 'hidden' && computedStyle.display !== 'none';
+        const isFocusable = input.tabIndex >= 0 || input.tagName === 'INPUT' || input.tagName === 'TEXTAREA' || input.tagName === 'SELECT';
+        const hasFocus = document.activeElement === input;
+        const isClickable = computedStyle.cursor !== 'not-allowed';
+        
+        // Check for more subtle blocking mechanisms
+        const parentComputedStyle = input.parentElement ? window.getComputedStyle(input.parentElement) : null;
+        const parentPointerEvents = parentComputedStyle ? parentComputedStyle.pointerEvents : 'auto';
+        const parentVisibility = parentComputedStyle ? parentComputedStyle.visibility : 'visible';
+        
+        // Check if input is actually interactive
+        let isInteractive = true;
+        try {
+          // Try to focus the input
+          input.focus();
+          const focused = document.activeElement === input;
+          input.blur();
+          isInteractive = focused;
+        } catch (e) {
+          isInteractive = false;
+        }
+        
+        if (isDisabled || isReadonly || hasPointerEventsNone || hasUserSelectNone || !isVisible || !isFocusable || !isClickable || parentPointerEvents === 'none' || parentVisibility === 'hidden' || !isInteractive) {
+          lockedInputs.push({
+            index,
+            tagName: input.tagName,
+            disabled: isDisabled,
+            readonly: isReadonly,
+            pointerEvents: computedStyle.pointerEvents,
+            userSelect: computedStyle.userSelect,
+            visibility: computedStyle.visibility,
+            display: computedStyle.display,
+            tabIndex: input.tabIndex,
+            hasFocus: hasFocus,
+            cursor: computedStyle.cursor,
+            parentPointerEvents: parentPointerEvents,
+            parentVisibility: parentVisibility,
+            isInteractive: isInteractive,
+            element: input
+          });
+        }
+      });
+      
+      console.log(`[DEBUG] Found ${lockedInputs.length} locked inputs:`, lockedInputs);
+      
+      // Also check for any global blocking elements
+      const blockingElements = [];
+      const allElements = document.querySelectorAll('*');
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.position === 'fixed' && 
+            computedStyle.zIndex > 1000 && 
+            (computedStyle.pointerEvents === 'none' || computedStyle.pointerEvents === 'auto')) {
+          blockingElements.push({
+            tagName: element.tagName,
+            className: element.className,
+            id: element.id,
+            zIndex: computedStyle.zIndex,
+            pointerEvents: computedStyle.pointerEvents,
+            position: computedStyle.position,
+            top: computedStyle.top,
+            left: computedStyle.left,
+            width: computedStyle.width,
+            height: computedStyle.height
+          });
+        }
+      });
+      
+      if (blockingElements.length > 0) {
+        console.log(`[DEBUG] Found ${blockingElements.length} potential blocking elements:`, blockingElements);
+      }
+      
+      return lockedInputs;
+    };
+
+    // Add keyboard shortcut for manual unlock (Ctrl+Shift+U)
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'U') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual unlock shortcut triggered');
+        if (window.unlockAllInputs) {
+          window.unlockAllInputs();
+        }
+      }
+      
+      // Add keyboard shortcut for testing input interactivity (Ctrl+Shift+T)
+      if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual input test shortcut triggered');
+        if (window.testInputInteractivity) {
+          window.testInputInteractivity();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      delete window.resetAllLoadingStates;
+      delete window.unlockAllInputs;
+      delete window.checkInputStatus; // Clean up the new function
+      delete window.testInputInteractivity; // Clean up the new function
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  // Function to remove any active dropdowns or suggestion elements
+  window.removeActiveDropdowns = () => {
+    console.log('[DEBUG] Checking for active dropdowns and suggestion elements');
+    
+    // Remove any suggestion dropdowns
+    const suggestionDropdowns = document.querySelectorAll('.suggestion-dropdown');
+    let dropdownsRemoved = 0;
+    suggestionDropdowns.forEach(dropdown => {
+      dropdown.style.display = 'none';
+      dropdownsRemoved++;
+      console.log('[DEBUG] Removed suggestion dropdown:', dropdown);
+    });
+    console.log(`[DEBUG] Removed ${dropdownsRemoved} suggestion dropdowns`);
+    
+    // Remove any dropdown containers with absolute positioning
+    const dropdownContainers = document.querySelectorAll('.dropdown-container > div[style*="position: absolute"]');
+    let containersRemoved = 0;
+    dropdownContainers.forEach(container => {
+      container.style.display = 'none';
+      containersRemoved++;
+      console.log('[DEBUG] Removed dropdown container:', container);
+    });
+    console.log(`[DEBUG] Removed ${containersRemoved} dropdown containers`);
+    
+    // Remove any elements with high z-index that are positioned absolutely
+    const highZIndexElements = document.querySelectorAll('*');
+    let highZIndexRemoved = 0;
+    highZIndexElements.forEach(element => {
+      const computedStyle = window.getComputedStyle(element);
+      if (computedStyle.zIndex === '9999' && computedStyle.position === 'absolute') {
+        element.style.display = 'none';
+        highZIndexRemoved++;
+        console.log('[DEBUG] Removed high z-index absolute element:', element);
+      }
+    });
+    console.log(`[DEBUG] Removed ${highZIndexRemoved} high z-index absolute elements`);
+  };
+
+  // Enhanced unlock function that handles the specific blocking card element
+  window.unlockAllInputs = () => {
+    console.log('[DEBUG] Unlocking all inputs globally');
+    if (window.navigationLoadingService) {
+      window.navigationLoadingService.resetAllLoadingStates();
+    }
+    
+    // Close any active modals first
+    window.closeActiveModals();
+    
+    // Remove any active dropdowns
+    window.removeActiveDropdowns();
+      
+      // First, handle the specific blocking card element with z-index 9999
+      const blockingCards = document.querySelectorAll('.card[style*="z-index: 9999"], .card[style*="z-index:9999"]');
+      let blockingCardsFixed = 0;
+      blockingCards.forEach(card => {
+        const computedStyle = window.getComputedStyle(card);
+        if (computedStyle.zIndex === '9999') {
+          card.style.zIndex = 'auto';
+          card.style.position = 'static';
+          blockingCardsFixed++;
+          console.log('[DEBUG] Fixed blocking card element:', card);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${blockingCardsFixed} blocking card elements`);
+      
+      // Remove any elements with high z-index that might be blocking
+      const allElements = document.querySelectorAll('*');
+      let highZIndexElementsFixed = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.zIndex === '9999' && 
+            (element.tagName === 'DIV' || element.classList.contains('card'))) {
+          element.style.zIndex = 'auto';
+          element.style.position = 'static';
+          highZIndexElementsFixed++;
+          console.log('[DEBUG] Fixed high z-index element:', element);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${highZIndexElementsFixed} high z-index elements`);
+      
+      // Fix pointer-events on all elements
+      let elementsWithPointerEventsNone = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.pointerEvents === 'none') {
+          element.style.pointerEvents = 'auto';
+          elementsWithPointerEventsNone++;
+        }
+      });
+      console.log(`[DEBUG] Fixed pointer-events on ${elementsWithPointerEventsNone} elements`);
+      
+      // Fix input attributes
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let disabledInputsFixed = 0;
+      let readonlyInputsFixed = 0;
+      allInputs.forEach(input => {
+        if (input.hasAttribute('disabled')) {
+          input.removeAttribute('disabled');
+          disabledInputsFixed++;
+        }
+        if (input.hasAttribute('readonly')) {
+          input.removeAttribute('readonly');
+          readonlyInputsFixed++;
+        }
+        if (input.style.pointerEvents === 'none') {
+          input.style.pointerEvents = 'auto';
+        }
+        if (input.style.userSelect === 'none') {
+          input.style.userSelect = 'auto';
+        }
+      });
+      console.log(`[DEBUG] Fixed ${disabledInputsFixed} disabled inputs and ${readonlyInputsFixed} readonly inputs`);
+      
+      // Remove any fixed position overlays with high z-index
+      const overlays = document.querySelectorAll('[style*="position: fixed"], [style*="position:fixed"]');
+      let overlaysRemoved = 0;
+      overlays.forEach(overlay => {
+        const computedStyle = window.getComputedStyle(overlay);
+        if (computedStyle.zIndex > 1000) {
+          overlay.style.display = 'none';
+          overlaysRemoved++;
+          console.log('[DEBUG] Removed blocking overlay:', overlay);
+        }
+      });
+      console.log(`[DEBUG] Removed ${overlaysRemoved} blocking overlays`);
+      
+      // Reset body and document element styles
+      document.body.style.pointerEvents = 'auto';
+      document.documentElement.style.pointerEvents = 'auto';
+      document.body.style.userSelect = 'auto';
+      document.documentElement.style.userSelect = 'auto';
+      
+      // Force a reflow to ensure changes take effect
+      document.body.offsetHeight;
+      
+      window.dispatchEvent(new CustomEvent('forceResetLoadingStates'));
+      console.log('[DEBUG] Input unlock completed');
+    };
+
+    // Add function to test input interactivity
+    window.testInputInteractivity = () => {
+      console.log('[DEBUG] Testing input interactivity...');
+      const allInputs = document.querySelectorAll('input, textarea, select');
+      let testResults = [];
+      
+      allInputs.forEach((input, index) => {
+        const testResult = {
+          index,
+          tagName: input.tagName,
+          type: input.type,
+          name: input.name,
+          id: input.id,
+          className: input.className,
+          tests: {}
+        };
+        
+        // Test 1: Can we focus the input?
+        try {
+          input.focus();
+          testResult.tests.canFocus = document.activeElement === input;
+          input.blur();
+        } catch (e) {
+          testResult.tests.canFocus = false;
+        }
+        
+        // Test 2: Can we click the input?
+        try {
+          const clickEvent = new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window
+          });
+          const clicked = input.dispatchEvent(clickEvent);
+          testResult.tests.canClick = clicked;
+        } catch (e) {
+          testResult.tests.canClick = false;
+        }
+        
+        // Test 3: Can we type in the input?
+        try {
+          if (input.type !== 'button' && input.type !== 'submit' && input.type !== 'reset') {
+            input.focus();
+            const keyEvent = new KeyboardEvent('keydown', {
+              key: 'a',
+              code: 'KeyA',
+              bubbles: true,
+              cancelable: true
+            });
+            const keyPressed = input.dispatchEvent(keyEvent);
+            testResult.tests.canType = keyPressed;
+            input.blur();
+          } else {
+            testResult.tests.canType = 'N/A';
+          }
+        } catch (e) {
+          testResult.tests.canType = false;
+        }
+        
+        // Test 4: Check if input is actually visible and accessible
+        const rect = input.getBoundingClientRect();
+        testResult.tests.isVisible = rect.width > 0 && rect.height > 0;
+        testResult.tests.isInViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+        
+        // Test 5: Check computed styles
+        const computedStyle = window.getComputedStyle(input);
+        testResult.tests.styles = {
+          pointerEvents: computedStyle.pointerEvents,
+          userSelect: computedStyle.userSelect,
+          visibility: computedStyle.visibility,
+          display: computedStyle.display,
+          opacity: computedStyle.opacity,
+          cursor: computedStyle.cursor
+        };
+        
+        testResults.push(testResult);
+      });
+      
+      console.log('[DEBUG] Input interactivity test results:', testResults);
+      
+      // Find inputs that are not interactive
+      const nonInteractiveInputs = testResults.filter(result => 
+        !result.tests.canFocus || 
+        !result.tests.canClick || 
+        (result.tests.canType !== 'N/A' && !result.tests.canType) ||
+        !result.tests.isVisible
+      );
+      
+      if (nonInteractiveInputs.length > 0) {
+        console.log('[DEBUG] Found non-interactive inputs:', nonInteractiveInputs);
+      }
+      
+      return testResults;
+    };
+
+    // Add function to check input status
+    window.checkInputStatus = () => {
+      console.log('[DEBUG] Checking input status...');
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let lockedInputs = [];
+      
+      allInputs.forEach((input, index) => {
+        const computedStyle = window.getComputedStyle(input);
+        const isDisabled = input.hasAttribute('disabled');
+        const isReadonly = input.hasAttribute('readonly');
+        const hasPointerEventsNone = computedStyle.pointerEvents === 'none';
+        const hasUserSelectNone = computedStyle.userSelect === 'none';
+        const isVisible = computedStyle.visibility !== 'hidden' && computedStyle.display !== 'none';
+        const isFocusable = input.tabIndex >= 0 || input.tagName === 'INPUT' || input.tagName === 'TEXTAREA' || input.tagName === 'SELECT';
+        const hasFocus = document.activeElement === input;
+        const isClickable = computedStyle.cursor !== 'not-allowed';
+        
+        // Check for more subtle blocking mechanisms
+        const parentComputedStyle = input.parentElement ? window.getComputedStyle(input.parentElement) : null;
+        const parentPointerEvents = parentComputedStyle ? parentComputedStyle.pointerEvents : 'auto';
+        const parentVisibility = parentComputedStyle ? parentComputedStyle.visibility : 'visible';
+        
+        // Check if input is actually interactive
+        let isInteractive = true;
+        try {
+          // Try to focus the input
+          input.focus();
+          const focused = document.activeElement === input;
+          input.blur();
+          isInteractive = focused;
+        } catch (e) {
+          isInteractive = false;
+        }
+        
+        if (isDisabled || isReadonly || hasPointerEventsNone || hasUserSelectNone || !isVisible || !isFocusable || !isClickable || parentPointerEvents === 'none' || parentVisibility === 'hidden' || !isInteractive) {
+          lockedInputs.push({
+            index,
+            tagName: input.tagName,
+            disabled: isDisabled,
+            readonly: isReadonly,
+            pointerEvents: computedStyle.pointerEvents,
+            userSelect: computedStyle.userSelect,
+            visibility: computedStyle.visibility,
+            display: computedStyle.display,
+            tabIndex: input.tabIndex,
+            hasFocus: hasFocus,
+            cursor: computedStyle.cursor,
+            parentPointerEvents: parentPointerEvents,
+            parentVisibility: parentVisibility,
+            isInteractive: isInteractive,
+            element: input
+          });
+        }
+      });
+      
+      console.log(`[DEBUG] Found ${lockedInputs.length} locked inputs:`, lockedInputs);
+      
+      // Also check for any global blocking elements
+      const blockingElements = [];
+      const allElements = document.querySelectorAll('*');
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.position === 'fixed' && 
+            computedStyle.zIndex > 1000 && 
+            (computedStyle.pointerEvents === 'none' || computedStyle.pointerEvents === 'auto')) {
+          blockingElements.push({
+            tagName: element.tagName,
+            className: element.className,
+            id: element.id,
+            zIndex: computedStyle.zIndex,
+            pointerEvents: computedStyle.pointerEvents,
+            position: computedStyle.position,
+            top: computedStyle.top,
+            left: computedStyle.left,
+            width: computedStyle.width,
+            height: computedStyle.height
+          });
+        }
+      });
+      
+      if (blockingElements.length > 0) {
+        console.log(`[DEBUG] Found ${blockingElements.length} potential blocking elements:`, blockingElements);
+      }
+      
+      return lockedInputs;
+    };
+
+    // Add keyboard shortcut for manual unlock (Ctrl+Shift+U)
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'U') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual unlock shortcut triggered');
+        if (window.unlockAllInputs) {
+          window.unlockAllInputs();
+        }
+      }
+      
+      // Add keyboard shortcut for testing input interactivity (Ctrl+Shift+T)
+      if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual input test shortcut triggered');
+        if (window.testInputInteractivity) {
+          window.testInputInteractivity();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      delete window.resetAllLoadingStates;
+      delete window.unlockAllInputs;
+      delete window.checkInputStatus; // Clean up the new function
+      delete window.testInputInteractivity; // Clean up the new function
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  // Function to remove any active dropdowns or suggestion elements
+  window.removeActiveDropdowns = () => {
+    console.log('[DEBUG] Checking for active dropdowns and suggestion elements');
+    
+    // Remove any suggestion dropdowns
+    const suggestionDropdowns = document.querySelectorAll('.suggestion-dropdown');
+    let dropdownsRemoved = 0;
+    suggestionDropdowns.forEach(dropdown => {
+      dropdown.style.display = 'none';
+      dropdownsRemoved++;
+      console.log('[DEBUG] Removed suggestion dropdown:', dropdown);
+    });
+    console.log(`[DEBUG] Removed ${dropdownsRemoved} suggestion dropdowns`);
+    
+    // Remove any dropdown containers with absolute positioning
+    const dropdownContainers = document.querySelectorAll('.dropdown-container > div[style*="position: absolute"]');
+    let containersRemoved = 0;
+    dropdownContainers.forEach(container => {
+      container.style.display = 'none';
+      containersRemoved++;
+      console.log('[DEBUG] Removed dropdown container:', container);
+    });
+    console.log(`[DEBUG] Removed ${containersRemoved} dropdown containers`);
+    
+    // Remove any elements with high z-index that are positioned absolutely
+    const highZIndexElements = document.querySelectorAll('*');
+    let highZIndexRemoved = 0;
+    highZIndexElements.forEach(element => {
+      const computedStyle = window.getComputedStyle(element);
+      if (computedStyle.zIndex === '9999' && computedStyle.position === 'absolute') {
+        element.style.display = 'none';
+        highZIndexRemoved++;
+        console.log('[DEBUG] Removed high z-index absolute element:', element);
+      }
+    });
+    console.log(`[DEBUG] Removed ${highZIndexRemoved} high z-index absolute elements`);
+  };
+
+  // Enhanced unlock function that handles the specific blocking card element
+  window.unlockAllInputs = () => {
+    console.log('[DEBUG] Unlocking all inputs globally');
+    if (window.navigationLoadingService) {
+      window.navigationLoadingService.resetAllLoadingStates();
+    }
+    
+    // Close any active modals first
+    window.closeActiveModals();
+    
+    // Remove any active dropdowns
+    window.removeActiveDropdowns();
+      
+      // First, handle the specific blocking card element with z-index 9999
+      const blockingCards = document.querySelectorAll('.card[style*="z-index: 9999"], .card[style*="z-index:9999"]');
+      let blockingCardsFixed = 0;
+      blockingCards.forEach(card => {
+        const computedStyle = window.getComputedStyle(card);
+        if (computedStyle.zIndex === '9999') {
+          card.style.zIndex = 'auto';
+          card.style.position = 'static';
+          blockingCardsFixed++;
+          console.log('[DEBUG] Fixed blocking card element:', card);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${blockingCardsFixed} blocking card elements`);
+      
+      // Remove any elements with high z-index that might be blocking
+      const allElements = document.querySelectorAll('*');
+      let highZIndexElementsFixed = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.zIndex === '9999' && 
+            (element.tagName === 'DIV' || element.classList.contains('card'))) {
+          element.style.zIndex = 'auto';
+          element.style.position = 'static';
+          highZIndexElementsFixed++;
+          console.log('[DEBUG] Fixed high z-index element:', element);
+        }
+      });
+      console.log(`[DEBUG] Fixed ${highZIndexElementsFixed} high z-index elements`);
+      
+      // Fix pointer-events on all elements
+      let elementsWithPointerEventsNone = 0;
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.pointerEvents === 'none') {
+          element.style.pointerEvents = 'auto';
+          elementsWithPointerEventsNone++;
+        }
+      });
+      console.log(`[DEBUG] Fixed pointer-events on ${elementsWithPointerEventsNone} elements`);
+      
+      // Fix input attributes
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let disabledInputsFixed = 0;
+      let readonlyInputsFixed = 0;
+      allInputs.forEach(input => {
+        if (input.hasAttribute('disabled')) {
+          input.removeAttribute('disabled');
+          disabledInputsFixed++;
+        }
+        if (input.hasAttribute('readonly')) {
+          input.removeAttribute('readonly');
+          readonlyInputsFixed++;
+        }
+        if (input.style.pointerEvents === 'none') {
+          input.style.pointerEvents = 'auto';
+        }
+        if (input.style.userSelect === 'none') {
+          input.style.userSelect = 'auto';
+        }
+      });
+      console.log(`[DEBUG] Fixed ${disabledInputsFixed} disabled inputs and ${readonlyInputsFixed} readonly inputs`);
+      
+      // Remove any fixed position overlays with high z-index
+      const overlays = document.querySelectorAll('[style*="position: fixed"], [style*="position:fixed"]');
+      let overlaysRemoved = 0;
+      overlays.forEach(overlay => {
+        const computedStyle = window.getComputedStyle(overlay);
+        if (computedStyle.zIndex > 1000) {
+          overlay.style.display = 'none';
+          overlaysRemoved++;
+          console.log('[DEBUG] Removed blocking overlay:', overlay);
+        }
+      });
+      console.log(`[DEBUG] Removed ${overlaysRemoved} blocking overlays`);
+      
+      // Reset body and document element styles
+      document.body.style.pointerEvents = 'auto';
+      document.documentElement.style.pointerEvents = 'auto';
+      document.body.style.userSelect = 'auto';
+      document.documentElement.style.userSelect = 'auto';
+      
+      // Force a reflow to ensure changes take effect
+      document.body.offsetHeight;
+      
+      window.dispatchEvent(new CustomEvent('forceResetLoadingStates'));
+      console.log('[DEBUG] Input unlock completed');
+    };
+
+    // Add function to test input interactivity
+    window.testInputInteractivity = () => {
+      console.log('[DEBUG] Testing input interactivity...');
+      const allInputs = document.querySelectorAll('input, textarea, select');
+      let testResults = [];
+      
+      allInputs.forEach((input, index) => {
+        const testResult = {
+          index,
+          tagName: input.tagName,
+          type: input.type,
+          name: input.name,
+          id: input.id,
+          className: input.className,
+          tests: {}
+        };
+        
+        // Test 1: Can we focus the input?
+        try {
+          input.focus();
+          testResult.tests.canFocus = document.activeElement === input;
+          input.blur();
+        } catch (e) {
+          testResult.tests.canFocus = false;
+        }
+        
+        // Test 2: Can we click the input?
+        try {
+          const clickEvent = new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window
+          });
+          const clicked = input.dispatchEvent(clickEvent);
+          testResult.tests.canClick = clicked;
+        } catch (e) {
+          testResult.tests.canClick = false;
+        }
+        
+        // Test 3: Can we type in the input?
+        try {
+          if (input.type !== 'button' && input.type !== 'submit' && input.type !== 'reset') {
+            input.focus();
+            const keyEvent = new KeyboardEvent('keydown', {
+              key: 'a',
+              code: 'KeyA',
+              bubbles: true,
+              cancelable: true
+            });
+            const keyPressed = input.dispatchEvent(keyEvent);
+            testResult.tests.canType = keyPressed;
+            input.blur();
+          } else {
+            testResult.tests.canType = 'N/A';
+          }
+        } catch (e) {
+          testResult.tests.canType = false;
+        }
+        
+        // Test 4: Check if input is actually visible and accessible
+        const rect = input.getBoundingClientRect();
+        testResult.tests.isVisible = rect.width > 0 && rect.height > 0;
+        testResult.tests.isInViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+        
+        // Test 5: Check computed styles
+        const computedStyle = window.getComputedStyle(input);
+        testResult.tests.styles = {
+          pointerEvents: computedStyle.pointerEvents,
+          userSelect: computedStyle.userSelect,
+          visibility: computedStyle.visibility,
+          display: computedStyle.display,
+          opacity: computedStyle.opacity,
+          cursor: computedStyle.cursor
+        };
+        
+        testResults.push(testResult);
+      });
+      
+      console.log('[DEBUG] Input interactivity test results:', testResults);
+      
+      // Find inputs that are not interactive
+      const nonInteractiveInputs = testResults.filter(result => 
+        !result.tests.canFocus || 
+        !result.tests.canClick || 
+        (result.tests.canType !== 'N/A' && !result.tests.canType) ||
+        !result.tests.isVisible
+      );
+      
+      if (nonInteractiveInputs.length > 0) {
+        console.log('[DEBUG] Found non-interactive inputs:', nonInteractiveInputs);
+      }
+      
+      return testResults;
+    };
+
+    // Add function to check input status
+    window.checkInputStatus = () => {
+      console.log('[DEBUG] Checking input status...');
+      const allInputs = document.querySelectorAll('input, textarea, select, button');
+      let lockedInputs = [];
+      
+      allInputs.forEach((input, index) => {
+        const computedStyle = window.getComputedStyle(input);
+        const isDisabled = input.hasAttribute('disabled');
+        const isReadonly = input.hasAttribute('readonly');
+        const hasPointerEventsNone = computedStyle.pointerEvents === 'none';
+        const hasUserSelectNone = computedStyle.userSelect === 'none';
+        const isVisible = computedStyle.visibility !== 'hidden' && computedStyle.display !== 'none';
+        const isFocusable = input.tabIndex >= 0 || input.tagName === 'INPUT' || input.tagName === 'TEXTAREA' || input.tagName === 'SELECT';
+        const hasFocus = document.activeElement === input;
+        const isClickable = computedStyle.cursor !== 'not-allowed';
+        
+        // Check for more subtle blocking mechanisms
+        const parentComputedStyle = input.parentElement ? window.getComputedStyle(input.parentElement) : null;
+        const parentPointerEvents = parentComputedStyle ? parentComputedStyle.pointerEvents : 'auto';
+        const parentVisibility = parentComputedStyle ? parentComputedStyle.visibility : 'visible';
+        
+        // Check if input is actually interactive
+        let isInteractive = true;
+        try {
+          // Try to focus the input
+          input.focus();
+          const focused = document.activeElement === input;
+          input.blur();
+          isInteractive = focused;
+        } catch (e) {
+          isInteractive = false;
+        }
+        
+        if (isDisabled || isReadonly || hasPointerEventsNone || hasUserSelectNone || !isVisible || !isFocusable || !isClickable || parentPointerEvents === 'none' || parentVisibility === 'hidden' || !isInteractive) {
+          lockedInputs.push({
+            index,
+            tagName: input.tagName,
+            disabled: isDisabled,
+            readonly: isReadonly,
+            pointerEvents: computedStyle.pointerEvents,
+            userSelect: computedStyle.userSelect,
+            visibility: computedStyle.visibility,
+            display: computedStyle.display,
+            tabIndex: input.tabIndex,
+            hasFocus: hasFocus,
+            cursor: computedStyle.cursor,
+            parentPointerEvents: parentPointerEvents,
+            parentVisibility: parentVisibility,
+            isInteractive: isInteractive,
+            element: input
+          });
+        }
+      });
+      
+      console.log(`[DEBUG] Found ${lockedInputs.length} locked inputs:`, lockedInputs);
+      
+      // Also check for any global blocking elements
+      const blockingElements = [];
+      const allElements = document.querySelectorAll('*');
+      allElements.forEach(element => {
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.position === 'fixed' && 
+            computedStyle.zIndex > 1000 && 
+            (computedStyle.pointerEvents === 'none' || computedStyle.pointerEvents === 'auto')) {
+          blockingElements.push({
+            tagName: element.tagName,
+            className: element.className,
+            id: element.id,
+            zIndex: computedStyle.zIndex,
+            pointerEvents: computedStyle.pointerEvents,
+            position: computedStyle.position,
+            top: computedStyle.top,
+            left: computedStyle.left,
+            width: computedStyle.width,
+            height: computedStyle.height
+          });
+        }
+      });
+      
+      if (blockingElements.length > 0) {
+        console.log(`[DEBUG] Found ${blockingElements.length} potential blocking elements:`, blockingElements);
+      }
+      
+      return lockedInputs;
+    };
+
+    // Add keyboard shortcut for manual unlock (Ctrl+Shift+U)
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'U') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual unlock shortcut triggered');
+        if (window.unlockAllInputs) {
+          window.unlockAllInputs();
+        }
+      }
+      
+      // Add keyboard shortcut for testing input interactivity (Ctrl+Shift+T)
+      if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+        e.preventDefault();
+        console.log('[DEBUG] Manual input test shortcut triggered');
+        if (window.testInputInteractivity) {
+          window.testInputInteractivity();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      delete window.resetAllLoadingStates;
+      delete window.unlockAllInputs;
+      delete window.checkInputStatus; // Clean up the new function
+      delete window.testInputInteractivity; // Clean up the new function
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  // Cleanup Google Drive auto-backup system on app unmount
+  useEffect(() => {
+    return () => {
+      try {
+        googleDriveService.cleanupAutoBackup();
+      } catch (error) {
+        console.error('Error cleaning up Google Drive auto-backup:', error);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log('[DEBUG][App.js] Chat panel useEffect triggered - showMessagePanel:', showMessagePanel, 'prevShowMessagePanelRef.current:', prevShowMessagePanelRef.current);
+    if (showMessagePanel) {
+      setNotifications(prev => prev.filter(n => n.type !== 'chat'));
+      // Only clear unread count if we're transitioning from closed to open
+      if (!prevShowMessagePanelRef.current) {
+        console.log('[DEBUG][App.js] About to clear unread count - current value:', unreadCount);
+        console.log('[DEBUG][App.js] About to clear unread count - calling setUnreadCount(0)');
+        console.trace('[DEBUG][App.js] Clear unread count stack trace');
+        unreadCountRef.current = 0;
+        setUnreadCount(0);
+        console.log('[DEBUG][App.js] Chat panel opened - cleared unread count, ref updated to:', unreadCountRef.current);
+      }
+      prevShowMessagePanelRef.current = true;
+    } else {
+      // Clear processed message IDs when chat panel is closed to prevent memory leaks
+      processedMessageIdsRef.current.clear();
+      currentProcessingMessageRef.current = null;
+      lastUnreadCountMessageRef.current = null;
+      prevShowMessagePanelRef.current = false;
+      console.log('[DEBUG][App.js] Cleared processed message IDs and current processing - chat panel closed');
+    }
+  }, [showMessagePanel]); // Removed unreadCount from dependencies to prevent infinite loop
+
+  // Add a separate useEffect to track when showMessagePanel changes
+  useEffect(() => {
+    console.log('[DEBUG][App.js] showMessagePanel state changed to:', showMessagePanel);
+    showMessagePanelRef.current = showMessagePanel;
+  }, [showMessagePanel]);
+
+  // Debug useEffect to track unread count changes
+  useEffect(() => {
+    console.log('[DEBUG][App.js] Unread count changed to:', unreadCount);
+    console.log('[DEBUG][App.js] Current showMessagePanel state:', showMessagePanel);
+    console.log('[DEBUG][App.js] Unread count should be displayed:', unreadCount > 0);
+    
+    // Add stack trace to see where the change is coming from
+    console.trace('[DEBUG][App.js] Unread count change stack trace');
+  }, [unreadCount, showMessagePanel]);
+
+  // Global walk-in notifications system
+  useEffect(() => {
+    function getStoredNotifications() {
+      try {
+        return JSON.parse(localStorage.getItem('walkinNotifications') || '[]');
+      } catch {
+        return [];
+      }
+    }
+    
+    // Clear old notifications when app starts to prevent them from triggering on startup
+    const clearOldNotifications = () => {
+      const now = Date.now();
+      const notifications = getStoredNotifications();
+      const recentNotifications = notifications.filter(notif => {
+        // Keep only notifications from the last 5 minutes
+        return (now - notif.timestamp) < 5 * 60 * 1000;
+      });
+      localStorage.setItem('walkinNotifications', JSON.stringify(recentNotifications));
+      return recentNotifications;
+    };
+    
+    // Clear old notifications and set current ones
+    const currentNotifications = clearOldNotifications();
+    setWalkinNotifications(currentNotifications);
+    
+    // Listen for custom notification events
+    const onNotificationUpdate = () => {
+      console.log('[DEBUG] App.js received walkinNotificationUpdate event');
+      setWalkinNotifications(getStoredNotifications());
+    };
+    window.addEventListener('walkinNotificationUpdate', onNotificationUpdate);
+    
+    // Also listen for storage changes (for cross-tab updates)
+    const onStorage = () => setWalkinNotifications(getStoredNotifications());
+    window.addEventListener('storage', onStorage);
+    
+    return () => {
+      window.removeEventListener('walkinNotificationUpdate', onNotificationUpdate);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
+  // Play sound for new walk-in notifications globally
+  useEffect(() => {
+    console.log('[DEBUG] App.js walkinNotifications changed:', walkinNotifications.length, 'notifications');
+    console.log('[DEBUG] App.js walkinNotifications details:', walkinNotifications);
+    
+    // Clear old notification IDs tracking when app starts
+    const clearOldNotificationIds = () => {
+      const now = Date.now();
+      const currentIds = walkinNotifications.map(n => n.id);
+      localStorage.setItem('lastWalkinNotificationIds', JSON.stringify(currentIds));
+      return [];
+    };
+    
+    // On first load, clear old tracking and don't play sounds
+    if (walkinNotifications.length > 0 && localStorage.getItem('appInitialized') !== 'true') {
+      clearOldNotificationIds();
+      localStorage.setItem('appInitialized', 'true');
+      return;
+    }
+    
+    let lastIds = [];
+    try {
+      lastIds = JSON.parse(localStorage.getItem('lastWalkinNotificationIds') || '[]');
+    } catch { lastIds = []; }
+    const newIds = walkinNotifications.map(n => n.id);
+    const newNotifs = walkinNotifications.filter(n => !lastIds.includes(n.id));
+    
+    console.log('[DEBUG] App.js lastIds:', lastIds);
+    console.log('[DEBUG] App.js newIds:', newIds);
+    console.log('[DEBUG] App.js newNotifs count:', newNotifs.length);
+    
+    if (newNotifs.length > 0) {
+      console.log('[DEBUG] App.js found new notifications:', newNotifs.length);
+      console.log('[DEBUG] App.js new notifications details:', newNotifs.map(n => ({
+        id: n.id,
+        type: n.type,
+        patient_name: n.patient_name,
+        message: n.message,
+        timestamp: new Date(n.timestamp).toISOString()
+      })));
+      
+      // Track which notifications we've already played sound for to prevent duplicates
+      const playedSounds = new Set();
+      
+      (async () => {
+        try {
+          const settings = await window.electronAPI.getSettings();
+          console.log('[DEBUG] App.js notification sound settings:', settings.notification_sounds_enabled);
+          
+          if (settings.notification_sounds_enabled === true || settings.notification_sounds_enabled === 'true') {
+            console.log('[DEBUG] App.js notification sounds are ENABLED, checking notification types...');
+            // Play different sounds based on notification type
+            for (const notif of newNotifs) {
+              console.log('[DEBUG] App.js processing notification:', {
+                id: notif.id,
+                type: notif.type,
+                patient_name: notif.patient_name
+              });
+              
+              if (notif.type === 'expected_patient') {
+                // Skip playing sound for expected_patient notifications - no sound when reaching maintenant
+                console.log('[DEBUG] App.js skipping sound for expected_patient notification - no sound when reaching maintenant');
+              } else if (notif.type === 'walk_in') {
+                // Check if we've already played sound for this notification
+                if (playedSounds.has(notif.id)) {
+                  console.log('[DEBUG] App.js skipping sound for notification', notif.id, '- already played');
+                  continue;
+                }
+                
+                // Mark this notification as having sound played
+                playedSounds.add(notif.id);
+                
+                // Play expectpatient.mp3 sound for walk_in notifications globally
+                console.log('[DEBUG] App.js attempting to play expectpatient.mp3 sound for walk_in notification');
+                console.log('[DEBUG] App.js creating Audio object with src: expectpatient.mp3');
+                const audio = new Audio('expectpatient.mp3');
+                
+                // Add event listeners to track audio playback
+                audio.addEventListener('loadstart', () => console.log('[DEBUG] App.js audio loadstart event'));
+                audio.addEventListener('canplay', () => console.log('[DEBUG] App.js audio canplay event'));
+                audio.addEventListener('play', () => console.log('[DEBUG] App.js audio play event - sound should be playing now'));
+                audio.addEventListener('error', (e) => console.error('[DEBUG] App.js audio error:', e));
+                audio.addEventListener('ended', () => console.log('[DEBUG] App.js audio ended event'));
+                
+                try {
+                  const playPromise = audio.play();
+                  if (playPromise !== undefined) {
+                    playPromise.then(() => {
+                      console.log('[DEBUG] App.js successfully started playing expectpatient.mp3 sound for walk_in notification');
+                    }).catch(error => {
+                      console.error('[DEBUG] App.js failed to play expectpatient.mp3 sound:', error);
+                    });
+                  }
+                } catch (playError) {
+                  console.error('[DEBUG] App.js error during audio.play():', playError);
+                }
+                
+                console.log('[DEBUG] App.js playing expectpatient.mp3 sound for walk_in notification globally');
+                
+                // Auto-remove walk_in notification after 3 seconds
+                console.log('[DEBUG] App.js setting up auto-removal for walk_in notification', notif.id, 'after 3 seconds');
+                setTimeout(() => {
+                  console.log('[DEBUG] App.js auto-removing walk_in notification', notif.id, 'after 3 seconds');
+                  removeWalkinNotification(notif.id);
+                }, 3000);
+              }
+            }
+          } else {
+            console.log('[DEBUG] App.js notification sounds are DISABLED in settings');
+          }
+        } catch (e) {
+          console.error('[DEBUG] App.js error loading settings, using fallback:', e);
+          // fallback: play anyway if settings can't be loaded
+          for (const notif of newNotifs) {
+            if (notif.type === 'expected_patient') {
+              // Skip playing sound for expected_patient notifications - no sound when reaching maintenant
+              console.log('[DEBUG] App.js skipping sound for expected_patient notification (fallback) - no sound when reaching maintenant');
+            } else if (notif.type === 'walk_in') {
+              // Check if we've already played sound for this notification
+              if (playedSounds.has(notif.id)) {
+                console.log('[DEBUG] App.js skipping sound for notification', notif.id, '- already played (fallback)');
+                continue;
+              }
+              
+              // Mark this notification as having sound played
+              playedSounds.add(notif.id);
+              
+              // Play expectpatient.mp3 sound for walk_in notifications globally
+              console.log('[DEBUG] App.js attempting to play expectpatient.mp3 sound for walk_in notification (fallback)');
+              const audio = new Audio('expectpatient.mp3');
+              audio.play();
+              console.log('[DEBUG] App.js playing expectpatient.mp3 sound for walk_in notification globally (fallback)');
+              
+              // Auto-remove walk_in notification after 3 seconds (fallback)
+              console.log('[DEBUG] App.js setting up auto-removal for walk_in notification', notif.id, 'after 3 seconds (fallback)');
+              setTimeout(() => {
+                console.log('[DEBUG] App.js auto-removing walk_in notification', notif.id, 'after 3 seconds (fallback)');
+                removeWalkinNotification(notif.id);
+              }, 3000);
+            }
+          }
+        }
+      })();
+    }
+    localStorage.setItem('lastWalkinNotificationIds', JSON.stringify(newIds));
+  }, [walkinNotifications]);
+
+  const loadSettings = async () => {
+    try {
+      console.log('Loading settings...');
+      const config = await window.electronAPI.getSettings();
+      console.log('Settings loaded:', config);
+      setSettings(config);
+      
+      // Set language
+      if (config.language) {
+        i18n.changeLanguage(config.language);
+      }
+      // Do NOT auto-connect to doctor here
+      // if (config.doctor_ip) {
+      //   console.log('Connecting to doctor at:', config.doctor_ip);
+      //   window.electronAPI.networkConnect(config.doctor_ip);
+      // } else {
+      //   console.warn('No doctor_ip found in settings.');
+      // }
+    } catch (error) {
+      console.error('Error loading settings:', error);
+    }
+  };
+
+
+
+  const setupCommunicationListeners = () => {
+    try {
+      // Listen for new messages (non-chat only)
+      if (window.electronAPI && window.electronAPI.onNewMessage) {
+        window.electronAPI.onNewMessage((message) => {
+          // Only create a notification if this is NOT a chat message
+          if (!message || message.type === 'chat' || message.senderId) return;
+          addNotification(t('newMessage'), 'info');
+        });
+      }
+
+      // Listen for appointment notifications
+      if (window.electronAPI && window.electronAPI.onAppointmentNotification) {
+        window.electronAPI.onAppointmentNotification((data) => {
+          addNotification(`${data.patientName} ${t('needsAppointment')}`, 'warning');
+        });
+      }
+
+      // Listen for "Book Appointment" notifications
+      if (window.electronAPI && window.electronAPI.onBookAppointmentRequest) {
+        window.electronAPI.onBookAppointmentRequest((data) => {
+          const notification = {
+            id: `appointment-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            type: 'book-appointment',
+            message: `#${data.patientName} needs a prochain RDV SVP`,
+            patientName: data.patientName,
+            patientId: data.patientId
+          };
+          setNotifications(prev => [...prev, notification]);
+        });
+      }
+    } catch (error) {
+      console.error('Error setting up communication listeners:', error);
+      // App can work without communication features
+    }
+  };
+
+  useEffect(() => {
+    console.log('App component mounted');
+    
+    // Prevent auto-scroll globally and get cleanup function
+    const cleanupScroll = preventAutoScroll();
+    
+    // Load settings and initialize language
+    loadSettings();
+    
+    // Set up communication event listeners
+    setupCommunicationListeners();
+
+    console.log('Registering onNetworkStatus listener');
+    if (window.electronAPI && window.electronAPI.onNetworkStatus) {
+      window.electronAPI.onNetworkStatus((status) => {
+        console.log('[Renderer] Network status:', status);
+      });
+    }
+    if (window.electronAPI && window.electronAPI.onNetworkStatusDebug) {
+      window.electronAPI.onNetworkStatusDebug((msg) => {
+        console.log('[Renderer] Network debug:', msg);
+      });
+    }
+
+    // Chat message listener will be set up in a separate useEffect with proper dependencies
+    
+    // Cleanup function
+    return () => {
+      if (cleanupScroll) {
+        cleanupScroll();
+      }
+      // Clean up event listeners to prevent duplicates
+      if (window.electronAPI && window.electronAPI.removeAllListeners) {
+        window.electronAPI.removeAllListeners('network-status');
+        window.electronAPI.removeAllListeners('network-status-debug');
+      }
+    };
+  }, []); // Removed showMessagePanel dependency
+
+  // Separate useEffect for chat message listener with proper dependencies
+  useEffect(() => {
+    console.log('[DEBUG][App.js] Setting up chat message listener - useEffect triggered');
+    console.log('[DEBUG][App.js] showMessagePanel:', showMessagePanel);
+    console.log('[DEBUG][App.js] getClientId():', getClientId());
+    
+    if (window.electronAPI && window.electronAPI.onChatMessage) {
+      // Remove any existing listeners to prevent duplicates
+      window.electronAPI.removeAllListeners('chat-message');
+      console.log('[DEBUG][App.js] Removed existing chat-message listeners');
+      
+      const chatMessageListener = (data) => {
+        console.log('[DEBUG][App.js] Received chat message (callback invoked):', data.id, data.message);
+        console.log('[DEBUG][App.js] Current processedMessageIdsRef size:', processedMessageIdsRef.current.size);
+        console.log('[DEBUG][App.js] Current processedMessageIdsRef contents:', Array.from(processedMessageIdsRef.current));
+        console.log('[DEBUG][App.js] Currently processing message:', currentProcessingMessageRef.current);
+        
+        // Check if this message is currently being processed
+        if (currentProcessingMessageRef.current === data.id) {
+          console.log('[DEBUG][App.js] Message is currently being processed, skipping:', data.id);
+          return;
+        }
+        
+        // Check if this message has already been processed using the ref
+        if (processedMessageIdsRef.current.has(data.id)) {
+          console.log('[DEBUG][App.js] Message already processed, skipping all state updates:', data.id);
+          return; // Exit early
+        }
+        
+        // Mark as currently being processed
+        currentProcessingMessageRef.current = data.id;
+        
+        // Mark as processed using the ref
+        processedMessageIdsRef.current.add(data.id);
+        console.log('[DEBUG][App.js] Processing new message for state updates:', data.id);
+        console.log('[DEBUG][App.js] Updated processedMessageIdsRef size:', processedMessageIdsRef.current.size);
+        
+        setMessages(prev => {
+          if (prev.some(m => m.id === data.id)) {
+            console.log('[DEBUG][App.js] Message already exists in messages state, skipping:', data.id);
+            return prev;
+          }
+          console.log('[DEBUG][App.js] Adding new message to messages state:', data.id);
+          return [...prev, data];
+        });
+        
+        const notificationId = data.id || `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Combine notification creation and unread count increment into a single atomic update
+        if (
+          data.senderId !== getClientId()
+        ) {
+          // Always increment unread count for new messages (regardless of chat panel state)
+          setUnreadCount(count => {
+            // Check if we've already incremented the count for this message
+            if (lastUnreadCountMessageRef.current === data.id) {
+              console.log('[DEBUG][App.js] Unread count already incremented for this message, skipping:', data.id);
+              return count;
+            }
+            
+            console.log('[DEBUG][App.js] Incrementing unread count from', count, 'to', count + 1, 'for message:', data.id);
+            console.trace('[DEBUG][App.js] Increment unread count stack trace');
+            lastUnreadCountMessageRef.current = data.id;
+            const newCount = count + 1;
+            unreadCountRef.current = newCount;
+            console.log('[DEBUG][App.js] Returning new count:', newCount, 'ref updated to:', unreadCountRef.current);
+            return newCount;
+          });
+          
+          // Only create notification if chat panel is not open
+          if (!showMessagePanelRef.current) {
+            setNotifications(prev => {
+              // Check if notification already exists
+              if (prev.some(n => n.id === notificationId)) {
+                console.log('[DEBUG][App.js] Notification already exists, skipping:', notificationId);
+                return prev;
+              }
+              
+              console.log('[DEBUG][App.js] Creating notification for message:', data.id);
+              const notification = {
+                id: notificationId,
+                message: data.message,
+                type: 'chat',
+                timestamp: data.timestamp || new Date().toISOString(),
+                sender: data.sender || 'doctor'
+              };
+              
+              return [...prev, notification];
+            });
+          } else {
+            console.log('[DEBUG][App.js] Chat panel is open, skipping notification creation for message:', data.id);
+          }
+        } else {
+          console.log('[DEBUG][App.js] Skipping notification creation for message:', data.id, 
+            'showMessagePanel:', showMessagePanel, 
+            'senderId:', data.senderId, 
+            'getClientId():', getClientId());
+        }
+        
+        // Clear the currently processing message ref after a short delay
+        setTimeout(() => {
+          currentProcessingMessageRef.current = null;
+          lastUnreadCountMessageRef.current = null;
+        }, 100);
+        
+        console.log('[DEBUG][App.js] <<< END onChatMessage callback invocation >>>', data.id);
+      };
+
+      window.electronAPI.onChatMessage(chatMessageListener);
+
+      return () => {
+        console.log('[DEBUG][App.js] Cleaning up chat message listener - useEffect cleanup');
+        window.electronAPI.removeAllListeners('chat-message');
+      };
+    }
+  }, [getClientId]); // Removed showMessagePanel from dependencies to prevent listener recreation
+
+  useEffect(() => {
+    if (window.electronAPI && window.electronAPI.onDoctorPresence) {
+      window.electronAPI.onDoctorPresence((data) => {
+        setIsDoctorConnected(!!data.online);
+      });
+    }
+  }, []);
+
+  // Connection status listener
+  useEffect(() => {
+    console.log('[DEBUG][App.js] Setting up connection status listener');
+    if (window.electronAPI && window.electronAPI.onConnectionStatus) {
+      console.log('[DEBUG][App.js] onConnectionStatus is available');
+      window.electronAPI.onConnectionStatus((status) => {
+        console.log('[DEBUG][App.js] Connection status update received:', status);
+        setConnectionStatus(status);
+        
+        // Reset auto-reconnect counters on successful connection
+        if (status === 'connected') {
+          handleSuccessfulConnection();
+        }
+      });
+    } else {
+      console.error('[DEBUG][App.js] onConnectionStatus is NOT available');
+    }
+    
+    // Get initial connection status
+    if (window.electronAPI && window.electronAPI.getConnectionStatus) {
+      console.log('[DEBUG][App.js] getConnectionStatus is available');
+      window.electronAPI.getConnectionStatus().then((status) => {
+        console.log('[DEBUG][App.js] Initial connection status received:', status);
+        setConnectionStatus(status);
+        
+        // Reset auto-reconnect counters if already connected
+        if (status === 'connected') {
+          handleSuccessfulConnection();
+        }
+      }).catch((error) => {
+        console.error('[DEBUG][App.js] Error getting initial connection status:', error);
+      });
+    } else {
+      console.error('[DEBUG][App.js] getConnectionStatus is NOT available');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (window.electronAPI && window.electronAPI.onConnectionSuccessPopup) {
+      window.electronAPI.onConnectionSuccessPopup(() => {
+        addNotification(t('loginSuccess') || 'Connexion réussie', 'success');
+      });
+    }
+  }, []);
+
+  // Global automatic reconnection setup
+  useEffect(() => {
+    console.log('[DEBUG][App.js] Setting up global connection loss detection and health checks');
+    
+    // Setup periodic connection health check (every 30 seconds)
+    const healthCheckInterval = setInterval(() => {
+      checkConnectionHealth();
+    }, 30000); // Check every 30 seconds
+    
+    healthCheckIntervalRef.current = healthCheckInterval;
+    
+    // Add a timeout to stop health checks after 10 minutes to prevent infinite retries
+    const healthCheckTimeout = setTimeout(() => {
+      console.log('[DEBUG][App.js] Health check timeout reached (10 minutes), stopping automatic reconnection');
+      if (healthCheckIntervalRef.current) {
+        clearInterval(healthCheckIntervalRef.current);
+        healthCheckIntervalRef.current = null;
+      }
+      setAutoReconnectEnabled(false);
+      setConnectionStatus('disconnected');
+    }, 600000); // 10 minutes timeout
+    
+    // Setup connection loss detection listeners
+    const setupConnectionLossDetection = () => {
+      // Listen for connection loss events from the main process
+      if (window.electronAPI && window.electronAPI.onConnectionLost) {
+        window.electronAPI.onConnectionLost(handleConnectionLoss);
+      }
+      
+      // Listen for network status changes
+      const handleOnline = () => {
+        console.log('[DEBUG][App.js] Network online, checking connection health');
+        setTimeout(() => checkConnectionHealth(), 2000);
+      };
+      
+      const handleOffline = () => {
+        console.log('[DEBUG][App.js] Network offline, marking as connection loss');
+        handleConnectionLoss();
+      };
+      
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+      
+      // Return cleanup function
+      return () => {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+        if (window.electronAPI && window.electronAPI.removeConnectionLostListener) {
+          window.electronAPI.removeConnectionLostListener(handleConnectionLoss);
+        }
+      };
+    };
+    
+    const cleanupConnectionDetection = setupConnectionLossDetection();
+    
+    // Cleanup function
+    return () => {
+      console.log('[DEBUG][App.js] Cleaning up global connection loss detection');
+      if (healthCheckIntervalRef.current) {
+        clearInterval(healthCheckIntervalRef.current);
+      }
+      clearTimeout(healthCheckTimeout);
+      cleanupConnectionDetection();
+    };
+  }, [autoReconnectEnabled, connectionLossCount]); // Re-run when auto-reconnect settings change
+
+  useEffect(() => {
+    if (isAuthenticated && window.electronAPI && window.electronAPI.sendFrontendReady) {
+      window.electronAPI.sendFrontendReady();
+      console.log('[Renderer] Emitted frontendReady');
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    // Optionally, you can delay the splash for a minimum time
+    // setTimeout(() => setShowSplash(false), 2000);
+  }, []);
+
+  // All functions (including handleLogin) here
+  const handleLogin = async (credentials) => {
+    console.log('[DEBUG] Submitted credentials:', credentials);
+    if (window.electronAPI && window.electronAPI.verifyCredentials) {
+      const valid = await window.electronAPI.verifyCredentials(credentials);
+      if (valid) {
+        setIsAuthenticated(true);
+        console.log('[DEBUG] Login successful');
+        
+        // Start the global appointment notification service
+        appointmentNotificationService.start();
+        
+        if (window.electronAPI && window.electronAPI.sendDoctorLoggedIn) {
+          window.electronAPI.sendDoctorLoggedIn();
+          console.log('[Renderer] Emitted doctorLoggedIn');
+        }
+      } else {
+        console.log('[DEBUG] Login failed');
+        addNotification(t('loginError'), 'error');
+      }
+    } else {
+      console.log('[DEBUG] electronAPI.verifyCredentials not available');
+      addNotification(t('loginError'), 'error');
+    }
+  };
+
+  // Add handleToggleDarkMode function
+  const handleToggleDarkMode = () => setIsDarkMode(prev => !prev);
+
+  // Add handleLogout function
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setNotifications(prev => [
+      ...prev,
+      {
+        id: `logout-${Date.now()}`,
+        message: t('logoutSuccess') || 'Déconnexion réussie',
+        type: 'info',
+      },
+    ]);
+  };
+
+  // Add addNotification function
+  const addNotification = (message, type = 'info', subText = '') => {
+    const id = `notification-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    setNotifications(prev => [
+      ...prev,
+      { id, message, type, subText },
+    ]);
+  };
+
+
+
+  // Handler for removing notifications from the Notifications page
+  const handleRemoveNotification = (id) => {
+    if (id === 'all') {
+      setNotifications([]);
+    } else {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }
+  };
+
+  // Global walk-in notification handlers
+  const removeWalkinNotification = async (id) => {
+    const notification = walkinNotifications.find(n => n.id === id);
+    const updated = walkinNotifications.filter(n => n.id !== id);
+    localStorage.setItem('walkinNotifications', JSON.stringify(updated));
+    setWalkinNotifications(updated);
+
+    // If this was an expected patient notification, mark as missed
+    if (notification && notification.type === 'expected_patient') {
+      try {
+        // Mark the appointment as missed
+        await window.electronAPI.updateAppointment({ 
+          ...notification.appointment, 
+          status: 'missed' 
+        });
+        console.log(`Appointment ${notification.id} marked as missed after notification closed`);
+      } catch (error) {
+        console.error('Error marking appointment as missed:', error);
+      }
+    }
+    
+    // If this was a walk_in notification, mark as missed
+    if (notification && notification.type === 'walk_in') {
+      try {
+        // Mark the appointment as missed
+        await window.electronAPI.updateAppointment({ 
+          ...notification.appointment, 
+          status: 'missed' 
+        });
+        console.log(`Appointment ${notification.id} marked as missed after walk_in notification closed`);
+      } catch (error) {
+        console.error('Error marking appointment as missed:', error);
+      }
+    }
+  };
+
+  const handleWalkinNotificationClick = (notif) => {
+    // Navigate to patient page with available data
+    window.location.hash = `/patients?id=${notif.patient_id}`;
+  };
+
+
+
+  // Handler to open chat and clear chat notifications
+  const handleOpenChatFromNotification = () => {
+    // Prevent notification sounds from playing when opening chat panel
+    const preventNotificationSound = () => {
+      // Temporarily disable notification sounds
+      const originalSettings = window.electronAPI.getSettings();
+      if (originalSettings && originalSettings.notification_sounds_enabled) {
+        // We'll restore this after a short delay
+        setTimeout(() => {
+          // The notification sound prevention is handled in the Notification component
+        }, 100);
+      }
+    };
+    
+    preventNotificationSound();
+    isOpeningChatPanelRef.current = true;
+    window.isOpeningChatPanel = true;
+    
+    // Temporarily disable notification sounds to prevent sound when opening from notification
+    window.notificationSoundsDisabled = true;
+    
+    setShowMessagePanel(true);
+    setNotifications(prev => prev.filter(n => n.type !== 'chat'));
+    unreadCountRef.current = 0;
+    setUnreadCount(0);
+    // Reset the flag after a short delay
+    setTimeout(() => {
+      isOpeningChatPanelRef.current = false;
+      window.isOpeningChatPanel = false;
+      window.notificationSoundsDisabled = false;
+    }, 500);
+  };
+
+  // Handler to close popup notification (soft close)
+  const closePopupNotification = (id) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, popupClosedAt: Date.now() } : n));
+  };
+
+  // Handler to add a new message to the messages state
+  const handleAddMessage = (msg) => {
+    setMessages(prev => {
+      if (prev.some(m => m.id === msg.id)) {
+        return prev;
+      }
+      return [...prev, msg];
+    });
+  };
+
+  // Global automatic reconnection functions
+  const checkConnectionHealth = async () => {
+    if (!autoReconnectEnabled || retryingRef.current) {
+      return; // Skip if auto-reconnect is disabled or already retrying
+    }
+
+    try {
+      // Check if we're supposed to be connected but status shows disconnected
+      if (connectionStatus === 'disconnected' && !retryingRef.current) {
+        console.log('[DEBUG][App.js] Connection health check: Status is disconnected, checking if we should auto-reconnect');
+        
+        // Only auto-reconnect if we haven't exceeded max attempts
+        if (connectionLossCount < maxAutoReconnectAttempts) {
+          console.log(`[DEBUG][App.js] Auto-reconnecting (attempt ${connectionLossCount + 1}/${maxAutoReconnectAttempts})`);
+          
+          // Increment connection loss count
+          setConnectionLossCount(prev => prev + 1);
+          
+          // Start automatic reconnection
+          await startConnectionWithRetry();
+        } else {
+          console.log('[DEBUG][App.js] Max auto-reconnect attempts reached, stopping automatic reconnection');
+          setAutoReconnectEnabled(false);
+        }
+      }
+      
+      setLastConnectionCheck(Date.now());
+    } catch (error) {
+      console.error('[DEBUG][App.js] Connection health check error:', error);
+    }
+  };
+
+  const handleConnectionLoss = () => {
+    console.log('[DEBUG][App.js] Connection loss detected');
+    
+    // Update status to disconnected
+    setConnectionStatus('disconnected');
+    
+    // If auto-reconnect is enabled, start reconnection after a short delay
+    if (autoReconnectEnabled && connectionLossCount < maxAutoReconnectAttempts) {
+      setTimeout(() => {
+        checkConnectionHealth();
+      }, 3000); // Wait 3 seconds before attempting reconnection
+    }
+  };
+
+  const handleSuccessfulConnection = () => {
+    setConnectionLossCount(0);
+    setAutoReconnectEnabled(true);
+    console.log('[DEBUG][App.js] Connection successful, resetting auto-reconnect counters');
+  };
+
+  const startConnectionWithRetry = async () => {
+    if (retryingRef.current) {
+      console.log('[DEBUG][App.js] Already retrying, skipping');
+      return;
+    }
+
+    // Check if we've exceeded the maximum retry attempts
+    if (connectionLossCount >= maxAutoReconnectAttempts) {
+      console.log(`[DEBUG][App.js] Maximum retry attempts (${maxAutoReconnectAttempts}) reached, stopping retry`);
+      setConnectionStatus('disconnected');
+      retryingRef.current = false;
+      return;
+    }
+
+    retryingRef.current = true;
+    console.log(`[DEBUG][App.js] Starting connection retry (attempt ${connectionLossCount + 1}/${maxAutoReconnectAttempts})`);
+
+    try {
+      // Get the current doctor IP from settings
+      const settings = await window.electronAPI.getSettings();
+      const doctorIp = settings.doctor_ip;
+
+      if (!doctorIp) {
+        console.log('[DEBUG][App.js] No doctor IP configured, skipping retry');
+        retryingRef.current = false;
+        return;
+      }
+
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Connection timeout')), 10000); // 10 second timeout
+      });
+
+      // Attempt to connect with timeout
+      const connectPromise = window.electronAPI.networkConnect({
+        ip: doctorIp,
+        clientId: getClientId(),
+        machineId: 'medops-assistant'
+      });
+
+      const result = await Promise.race([connectPromise, timeoutPromise]);
+
+      if (result.success) {
+        console.log('[DEBUG][App.js] Connection retry successful');
+        handleSuccessfulConnection();
+      } else {
+        console.log('[DEBUG][App.js] Connection retry failed:', result.message);
+        // Increment retry count for failed attempts
+        setConnectionLossCount(prev => prev + 1);
+      }
+    } catch (error) {
+      console.error('[DEBUG][App.js] Connection retry error:', error);
+      // Increment retry count for errors
+      setConnectionLossCount(prev => prev + 1);
+    } finally {
+      retryingRef.current = false;
+    }
+  };
+
+  // Add keyboard shortcuts for debugging
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      // Ctrl+Shift+U: Unlock all inputs
+      if (event.ctrlKey && event.shiftKey && event.key === 'U') {
+        event.preventDefault();
+        console.log('[DEBUG] Manual unlock triggered via keyboard shortcut');
+        window.unlockAllInputs();
+      }
+      
+      // Ctrl+Shift+T: Test input interactivity
+      if (event.ctrlKey && event.shiftKey && event.key === 'T') {
+        event.preventDefault();
+        console.log('[DEBUG] Manual input test triggered via keyboard shortcut');
+        window.testInputInteractivity();
+      }
+      
+      // Ctrl+Shift+D: Remove active dropdowns
+      if (event.ctrlKey && event.shiftKey && event.key === 'D') {
+        event.preventDefault();
+        console.log('[DEBUG] Manual dropdown removal triggered via keyboard shortcut');
+        window.removeActiveDropdowns();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Place conditional returns only after all hooks
+  if (showSplash) {
+    return <MedOpsTextEffect onFinish={() => setShowSplash(false)} />;
+  }
+  if (!isAuthenticated) {
+    return <Login onLogin={handleLogin} />;
+  }
+
+  // Restore original return block
+  return (
+    <ErrorBoundary>
+      <Router>
+        <ScrollRestoration />
+        <div className={`app app-container${isDarkMode ? ' dark-mode' : ''}`}>
+          <Sidebar 
+            onLogout={handleLogout}
+            notificationsCount={notifications.length}
+            isDarkMode={isDarkMode}
+            onToggleDarkMode={handleToggleDarkMode}
+            connectionStatus={connectionStatus}
+          />
+          
+          <div className="main-content">
+            <Routes>
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/patients" element={<PatientPanel isDoctorConnected={connectionStatus === 'connected'} addNotification={addNotification} />} />
+              <Route path="/all-patients" element={<AllPatients addNotification={addNotification} />} />
+              <Route path="/queue" element={<Queue />} />
+              <Route path="/appointments" element={<Appointments addNotification={addNotification} />} />
+              <Route path="/settings" element={<Settings onSettingsUpdate={loadSettings} />} />
+              <Route path="/notifications" element={<Notifications notifications={notifications} onRemove={handleRemoveNotification} />} />
+      
+            </Routes>
+          </div>
+
+          {/* Chat Icon */}
+          <ChatIcon 
+            key={`chat-icon-${unreadCount}`}
+            unreadCount={unreadCount || unreadCountRef.current}
+            onClick={() => {
+              // Prevent notification sounds when opening chat panel
+              isOpeningChatPanelRef.current = true;
+              window.isOpeningChatPanel = true;
+              
+              // Temporarily disable notification sounds to prevent sound when clicking icon
+              window.notificationSoundsDisabled = true;
+              
+              setShowMessagePanel(true);
+              // Reset the flag after a short delay
+              setTimeout(() => {
+                isOpeningChatPanelRef.current = false;
+                window.isOpeningChatPanel = false;
+                window.notificationSoundsDisabled = false;
+              }, 500);
+            }}
+            isVisible={!showMessagePanel}
+          />
+
+          {/* Message Panel */}
+          {showMessagePanel && (
+            <MessagePanel 
+              onClose={() => setShowMessagePanel(false)}
+              messages={messages}
+              onAddMessage={handleAddMessage}
+            />
+          )}
+
+          {/* Notifications */}
+          {notifications.filter(n => !n.popupClosedAt).map(notification => {
+            let subText = 'Vous avez une nouvelle notification';
+            if (notification.type === 'chat') subText = 'Nouveau message';
+            else if (notification.type === 'book-appointment') subText = 'Demande de rendez-vous';
+            else if (notification.type === 'warning') subText = 'Alerte';
+            else if (notification.type === 'error') subText = 'Erreur';
+            else if (notification.type === 'success') subText = 'Succès';
+            return (
+              <Notification
+                key={notification.id}
+                message={notification.message}
+                type={notification.type}
+                subText={notification.subText || subText}
+                onClick={notification.type === 'chat' ? handleOpenChatFromNotification : undefined}
+                onClose={() => closePopupNotification(notification.id)}
+                duration={5000}
+              />
+            );
+          })}
+
+
+
+          {/* Global Walk-in Notifications */}
+          {console.log('[DEBUG] Rendering walk-in notifications:', walkinNotifications.length)}
+          {walkinNotifications && walkinNotifications.length > 0 && walkinNotifications.map(notif => (
+            <Notification
+              key={notif.id}
+              message={notif.message}
+              type={notif.type === 'expected_patient' ? 'warning' : 'info'}
+              subText={notif.patient_id ? `ID: ${notif.patient_id}` : ''}
+              onClick={() => handleWalkinNotificationClick(notif)}
+              onClose={() => removeWalkinNotification(notif.id)}
+              autoHide={notif.type !== 'expected_patient'} // Don't auto-hide expected patient notifications
+              duration={notif.type === 'expected_patient' ? 0 : 10000} // No auto-hide for expected patient notifications
+            />
+          ))}
+        </div>
+      </Router>
+    </ErrorBoundary>
+  );
+}
+
+export default App;

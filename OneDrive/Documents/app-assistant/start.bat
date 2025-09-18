@@ -1,0 +1,3 @@
+@echo off
+echo Starting Cabneo Assistant...
+npm start 

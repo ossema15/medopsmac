@@ -1,0 +1,50 @@
+.file-link {
+  color: #3366cc;
+  text-decoration: underline;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+}
+.file-link:hover, .file-link:focus {
+  color: #254a91;
+  text-decoration: underline;
+  outline: 2px solid #254a91;
+}
+.file-list {
+  border: 1px solid #e1e5e9;
+  border-radius: 6px;
+  background: #f8f9fa;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.file-item {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #e1e5e9;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.file-item:last-child {
+  border-bottom: none;
+}
+
+/* Spinner for loading/opening feedback */
+.file-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #254a91;
+  border-top: 2px solid #f8f9fa;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+ 

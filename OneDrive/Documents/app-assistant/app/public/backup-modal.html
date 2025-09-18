@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+  <title>Select Backup Location</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #0b1220; color: #e5e7eb; }
+    .card { margin: 16px; padding: 20px; border-radius: 12px; background: #111827; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+    h2 { margin: 0 0 8px 0; font-weight: 600; }
+    p { margin: 8px 0 16px 0; color: #9ca3af; }
+    .actions { display: flex; gap: 10px; justify-content: flex-end; }
+    button { border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 600; cursor: pointer; }
+    .primary { background: #2563eb; color: white; }
+    .secondary { background: #374151; color: #e5e7eb; }
+    .input { width: 100%; box-sizing: border-box; background: #0b1220; color: #e5e7eb; border: 1px solid #374151; border-radius: 8px; padding: 10px 12px; }
+    .row { display: flex; gap: 8px; align-items: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Select backup location</h2>
+    <p>Choose where MedOps should store backup files.</p>
+
+    <div class="row" style="margin-bottom:12px;">
+      <input id="path" class="input" placeholder="e.g. C:\\MedOps\\Backups" value="C:\\MedOps\\Backups" />
+      <button id="useDefault" class="secondary" title="Use default: C:\\MedOps\\Backups">Default</button>
+    </div>
+
+    <div class="actions">
+      <button id="cancel" class="secondary">Cancel</button>
+      <button id="choose" class="primary">Use this folder</button>
+    </div>
+  </div>
+
+  <script>
+    const input = document.getElementById('path');
+    document.getElementById('useDefault').addEventListener('click', () => {
+      input.value = 'C\\MedOps\\Backups'.replace(/\\/g, '\\\\');
+      input.value = 'C:\\MedOps\\Backups';
+    });
+    document.getElementById('cancel').addEventListener('click', () => {
+      window.modalAPI.cancelBackup();
+    });
+    document.getElementById('choose').addEventListener('click', () => {
+      const p = input.value.trim();
+      if (!p) { return window.modalAPI.cancelBackup(); }
+      window.modalAPI.chooseBackupPath(p);
+    });
+  </script>
+</body>
+</html>

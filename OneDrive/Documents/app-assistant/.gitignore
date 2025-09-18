@@ -1,0 +1,36 @@
+node_modules
+dist/
+bootstrapper/dist/
+*.dmg
+*.zip
+*.exe
+*.blockmap
+*.yml
+*.yaml
+.DS_Store
+
+# Environment and credentials
+.env
+.env.*
+*.pem
+*.p12
+*.key
+*.crt
+*.cer
+*.p8
+medops-*.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Renderer build outputs (do not commit bundled code)
+app/public/bundle.js
+app/public/bundle.js.map
+app/public/vendors-*.js
+app/public/vendors-*.js.map
+src/renderer/js/bundle.js
+src/renderer/js/bundle.js.map

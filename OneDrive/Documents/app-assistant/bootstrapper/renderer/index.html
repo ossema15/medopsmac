@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="fr" class="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MedOps Installer</title>
+  <style>
+    :root { --bg: #0f1b2d; --panel: #14223a; --text: #e6eef9; --muted:#9fb3c8; --accent: #24c26a; --border:#1d2d4b; --input:#0a1526; }
+    .light { --bg: #f7f9fc; --panel: #ffffff; --text: #0a172b; --muted:#5b6b7c; --accent:#007f4f; --border:#dbe3ee; --input:#f0f4f9; }
+    html, body { height: 100%; margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
+    .container { display: grid; grid-template-columns: 260px 1fr; height: 100%; }
+    .sidebar { background: url('../branding/hero.gif') center/cover no-repeat, linear-gradient(180deg, #0e1a2b, #162844); position: relative; box-shadow: inset -60px 0 120px rgba(15,27,45,0.85); }
+    .main { display: flex; flex-direction: column; padding: 40px 48px; }
+    .brand { display:flex; align-items:center; gap:12px; justify-content: space-between; }
+    .brand img { width: 28px; height: 28px; }
+    h1 { font-size: 28px; margin: 24px 0 8px; }
+    p.lead { color: var(--muted); margin: 0 0 24px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-top: 12px; }
+    .controls { display:flex; gap:12px; align-items:center; margin-top: 12px; }
+    .path { flex:1; background:var(--input); border:1px solid var(--border); border-radius:8px; padding:10px 12px; color:inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .btn { background: var(--accent); color:#0a1711; border:0; border-radius:10px; padding:12px 18px; font-weight:600; cursor:pointer; }
+    .btn.secondary { background: #274268; color:#e6eef9; }
+    .btn:disabled { opacity:.6; cursor: not-allowed; }
+    .btn:focus-visible, a:focus-visible, input[type="checkbox"]:focus-visible { outline: 3px solid #8acbff; outline-offset: 2px; border-radius: 6px; }
+    .fineprint { margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .features { margin-top: 20px; color: var(--muted); }
+    .features li { margin: 6px 0; }
+    .footer { margin-top:auto; display:flex; align-items:center; justify-content: space-between; }
+    .agree { display:flex; align-items:center; gap:8px; }
+    a { color:#8acbff; text-decoration: underline; }
+    .status { font-size: 12px; color: #a8c3df; margin-left: 12px; }
+    .hidden { display: none; }
+    .progress { height: 6px; background:var(--input); border-radius: 999px; overflow: hidden; border:1px solid var(--border); }
+    .bar { width: 30%; height: 100%; background: linear-gradient(90deg,#22d07a,#1bb56a); animation: move 1.1s linear infinite; }
+    @keyframes move { from { transform: translateX(-100%);} to { transform: translateX(300%);} }
+    .actions { display:flex; gap:8px; }
+    .theme-toggle { background: transparent; color: inherit; border:1px solid var(--border); padding:8px 10px; border-radius: 8px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="sidebar"></div>
+    <div class="main">
+      <div class="brand">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <strong>MedOps Installer</strong>
+        </div>
+        <button id="themeToggle" class="theme-toggle" aria-label="Basculer le thème">Thème</button>
+      </div>
+      <h1>Installer MedOps</h1>
+      <p class="lead">Assistant de gestion médicale. Choisissez le dossier d'installation, acceptez le contrat, puis cliquez sur Installer.</p>
+
+      <div id="card-welcome" class="card">
+        <h2 style="margin:0 0 8px;">Bienvenue</h2>
+        <p class="lead" id="welcomeText">Cet assistant va installer MedOps sur votre ordinateur.</p>
+        <ul class="features" aria-label="Fonctionnalités principales">
+          <li>Planification et gestion des patients</li>
+          <li>Synchronisation sécurisée des données</li>
+          <li>Flux de travail fluide</li>
+        </ul>
+        <div class="controls">
+          <button id="startWelcome" class="btn" aria-label="Commencer l'installation">Commencer</button>
+        </div>
+      </div>
+
+      <div id="card-path" class="card hidden">
+        <div class="controls">
+          <div id="path" class="path"></div>
+          <button id="browse" class="btn secondary">Parcourir…</button>
+        </div>
+        <div class="fineprint">Si vous ne choisissez pas, l'installateur utilisera son dossier par défaut.</div>
+      </div>
+
+      <div id="card-eula" class="card hidden">
+        <label class="agree">
+          <input type="checkbox" id="agree" />
+          <span>J'accepte le <a href="#" id="openEula">Contrat de licence</a>.</span>
+        </label>
+        <label class="agree" style="margin-top:8px;">
+          <input type="checkbox" id="autoLaunch" checked />
+          <span>Lancer MedOps après l'installation</span>
+        </label>
+      </div>
+
+      <div id="footer-ready" class="footer hidden">
+        <div><span id="status" class="status"></span></div>
+        <button id="install" class="btn" disabled>Installer</button>
+      </div>
+
+      <div id="footer-progress" class="footer hidden">
+        <div style="flex:1; margin-right:16px;">
+          <div class="progress" role="progressbar" aria-label="Progression de l'installation" aria-busy="true"><div class="bar"></div></div>
+          <div class="status" id="progressText">Installation en cours…</div>
+        </div>
+        <button id="cancelDisabled" class="btn secondary" disabled>Annuler</button>
+      </div>
+
+      <div id="footer-success" class="footer hidden">
+        <div class="status">Installation terminée</div>
+        <div class="actions">
+          <button id="openFolder" class="btn secondary">Ouvrir le dossier</button>
+          <button id="close" class="btn">Fermer</button>
+        </div>
+      </div>
+
+      <div id="footer-fail" class="footer hidden">
+        <div class="status" id="failMsg">Échec de l'installation</div>
+        <div class="actions">
+          <button id="viewLog" class="btn secondary" aria-label="Voir le journal d'installation">Voir le journal</button>
+          <button id="retry" class="btn">Réessayer</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Ensure sidebar GIF works in dev and packaged
+    const sidebarEl = document.querySelector('.sidebar');
+    (async function setSidebarBackground() {
+      const devPath = '../../assets/12deed73-b111-46f3-9585-45087625cd02.mp4.gif';
+      const gradient = 'linear-gradient(180deg, #0e1a2b, #162844)';
+      const trySet = (src, onfail) => {
+        const img = new Image();
+        img.onload = () => {
+          sidebarEl.style.backgroundImage = `url('${src}'), ${gradient}`;
+          sidebarEl.style.backgroundPosition = '33% center';
+          sidebarEl.style.backgroundSize = 'cover';
+          sidebarEl.style.backgroundRepeat = 'no-repeat';
+        };
+        img.onerror = () => { if (onfail) onfail(); };
+        img.src = src;
+      };
+      try {
+        const packagedUrl = await window.bootstrapper.getResourceUrl('branding/hero.gif');
+        if (packagedUrl) return trySet(packagedUrl, () => trySet(devPath));
+      } catch (_) {}
+      trySet(devPath);
+    })();
+
+    const pathEl = document.getElementById('path');
+    const browseBtn = document.getElementById('browse');
+    const agree = document.getElementById('agree');
+    const openEula = document.getElementById('openEula');
+    const autoLaunch = document.getElementById('autoLaunch');
+    const installBtn = document.getElementById('install');
+    const statusEl = document.getElementById('status');
+    const cardPath = document.getElementById('card-path');
+    const cardEula = document.getElementById('card-eula');
+    const footerReady = document.getElementById('footer-ready');
+    const footerProgress = document.getElementById('footer-progress');
+    const footerSuccess = document.getElementById('footer-success');
+    const footerFail = document.getElementById('footer-fail');
+    const failMsg = document.getElementById('failMsg');
+    const progressText = document.getElementById('progressText');
+    const btnOpenFolder = document.getElementById('openFolder');
+    const btnClose = document.getElementById('close');
+    const btnRetry = document.getElementById('retry');
+    const btnViewLog = document.getElementById('viewLog');
+    const themeToggle = document.getElementById('themeToggle');
+    const cardWelcome = document.getElementById('card-welcome');
+    const startWelcome = document.getElementById('startWelcome');
+
+    let chosenDir = '';
+    let defaultDir = '';
+    let logPath = '';
+
+    function update() {
+      pathEl.textContent = chosenDir || 'Chemin par défaut de l\'installateur';
+      installBtn.disabled = !agree.checked;
+    }
+
+    function setState(state, errText='') {
+      const show = (el, v) => el.classList.toggle('hidden', !v);
+      show(cardWelcome, state==='welcome');
+      show(cardPath, state==='ready');
+      show(cardEula, state==='ready');
+      show(footerReady, state==='ready');
+      show(footerProgress, state==='progress');
+      show(footerSuccess, state==='success');
+      show(footerFail, state==='fail');
+      if (state==='progress') progressText.textContent = 'Installation en cours…';
+      if (state==='fail') failMsg.textContent = 'Échec de l\'installation' + (errText? (': '+errText):'');
+    }
+
+    browseBtn.addEventListener('click', async () => {
+      const dir = await window.bootstrapper.pickInstallDir();
+      if (dir) {
+        chosenDir = dir;
+        update();
+      }
+    });
+
+    openEula.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await window.bootstrapper.openEula();
+    });
+
+    agree.addEventListener('change', update);
+
+    startWelcome.addEventListener('click', () => {
+      setState('ready');
+    });
+
+    installBtn.addEventListener('click', async () => {
+      setState('progress');
+      const res = await window.bootstrapper.startInstall({ installDir: chosenDir, autoLaunch: !!autoLaunch.checked });
+      if (res.ok) {
+        setState('success');
+      } else {
+        setState('fail', res.error || ('code ' + res.code));
+        if (res.logPath) logPath = res.logPath;
+      }
+    });
+
+    btnOpenFolder.addEventListener('click', async () => {
+      const dir = chosenDir || defaultDir || await window.bootstrapper.getDefaultInstallDir();
+      if (dir) await window.bootstrapper.openFolder(dir);
+    });
+
+    btnClose.addEventListener('click', () => { window.close(); });
+
+    btnRetry.addEventListener('click', () => { setState('ready'); statusEl.textContent = "Astuce: fermez tout antivirus susceptible de bloquer l'installation, puis réessayez."; });
+
+    btnViewLog.addEventListener('click', async () => {
+      if (!logPath) logPath = await window.bootstrapper.getLogPath();
+      if (logPath) {
+        await window.bootstrapper.openLog();
+      } else {
+        statusEl.textContent = "Journal indisponible.";
+      }
+    });
+
+    // Theme toggle
+    function applyTheme(t) {
+      document.documentElement.classList.toggle('light', t === 'light');
+    }
+    const savedTheme = localStorage.getItem('medops-theme') || 'light';
+    applyTheme(savedTheme);
+    themeToggle.addEventListener('click', () => {
+      const current = document.documentElement.classList.contains('light') ? 'light' : 'dark';
+      const next = current === 'light' ? 'dark' : 'light';
+      localStorage.setItem('medops-theme', next);
+      applyTheme(next);
+    });
+
+    update();
+
+    (async () => {
+      defaultDir = await window.bootstrapper.getDefaultInstallDir();
+      logPath = await window.bootstrapper.getLogPath();
+    })();
+    setState('welcome');
+  </script>
+</body>
+</html>

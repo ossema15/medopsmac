@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>License Activation</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: Inter, Segoe UI, Roboto, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    .wrap { max-width: 520px; margin: 0 auto; padding: 24px; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 20px; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { margin: 6px 0; color: #94a3b8; }
+    .row { margin-top: 16px; display: flex; gap: 8px; }
+    input[type="text"] { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #0b1220; color: #e2e8f0; }
+    .btn { padding: 10px 14px; border-radius: 8px; border: 0; cursor: pointer; font-weight: 600; }
+    .btn-primary { background: #4f46e5; color: #fff; }
+    .btn-secondary { background: #334155; color: #e2e8f0; }
+    .status { margin-top: 12px; font-size: 13px; color: #a3e635; }
+    .error { color: #ef4444; }
+    .muted { color: #94a3b8; font-size: 12px; }
+    .hint { color: #94a3b8; font-size: 12px; margin-top: 6px; }
+    a.mail { display:inline-block; background:#16a34a; color:#fff; text-decoration:none; border-radius:8px; padding:10px 14px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Activate MedOps</h1>
+      <p id="trialText">Checking trial status…</p>
+      <p class="muted">You can continue using the app during the 30-day trial. After the trial ends, please activate your license.</p>
+
+      <div class="row">
+        <input type="text" id="licenseKey" placeholder="Paste license key here" />
+        <button class="btn btn-primary" id="activateBtn">Activate</button>
+      </div>
+      <div class="row" aria-live="polite">
+        <input type="text" id="fingerprint" placeholder="Machine fingerprint" readonly value="Loading fingerprint…" />
+        <button class="btn btn-secondary" id="copyFpBtn" title="Copy fingerprint">Copy</button>
+      </div>
+      <div class="row" style="justify-content:flex-end">
+        <a id="mailto" class="mail" href="#" target="_blank">Email Request</a>
+      </div>
+      <div class="hint">Send this fingerprint to request a 1-year activation key.</div>
+      <div class="row">
+        <button class="btn btn-secondary" id="closeBtn">Close</button>
+      </div>
+      <div id="status" class="status" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const trialText = document.getElementById('trialText');
+    const keyInput = document.getElementById('licenseKey');
+    const activateBtn = document.getElementById('activateBtn');
+    const closeBtn = document.getElementById('closeBtn');
+    const fpInput = document.getElementById('fingerprint');
+    const copyFpBtn = document.getElementById('copyFpBtn');
+    const mailLink = document.getElementById('mailto');
+
+    async function refresh() {
+      try {
+        const s = await window.license.getStatus();
+        if (s.activated) {
+          trialText.textContent = 'License is activated. Thank you!';
+          statusEl.textContent = '';
+          // Close automatically to continue app startup
+          setTimeout(() => window.license.activated(), 400);
+          return;
+        }
+        if (s.clockIssue) {
+          trialText.textContent = 'System clock issue detected. Please correct your system time.';
+        } else {
+          trialText.textContent = s.expired
+            ? 'Your trial has expired.'
+            : `Trial active — ${s.daysLeft} day(s) left.`;
+        }
+        statusEl.textContent = '';
+      } catch (e) {
+        trialText.textContent = 'Unable to read trial status.';
+      }
+    }
+
+    activateBtn.addEventListener('click', async () => {
+      const key = keyInput.value.replace(/\s/g, '').trim();
+      if (!key) { statusEl.textContent = 'Please paste a license key.'; statusEl.classList.add('error'); return; }
+      statusEl.textContent = 'Verifying license…'; statusEl.classList.remove('error');
+      const res = await window.license.activate(key);
+      if (res && res.success) {
+        statusEl.textContent = 'License activated successfully!';
+        // Signal main and close
+        setTimeout(() => window.license.activated(), 300);
+      } else {
+        statusEl.textContent = `Activation failed: ${res && res.error ? res.error : 'unknown error'}`;
+        statusEl.classList.add('error');
+      }
+    });
+
+
+    // Normalize whitespace on input/paste to help with long tokens
+    keyInput.addEventListener('input', () => {
+      const v = keyInput.value.replace(/\s+/g, ' ').trimStart();
+      if (v !== keyInput.value) keyInput.value = v;
+    });
+
+    closeBtn.addEventListener('click', () => {
+      window.license.close();
+    });
+
+    async function loadFingerprint() {
+      try {
+        const res = await window.license.getHwid();
+        const fp = (res && res.hwid) ? res.hwid : 'unavailable';
+        fpInput.value = fp;
+        const subject = encodeURIComponent('Requesting activation for one year');
+        const body = encodeURIComponent('Please issue a license key for this fingerprint: ' + fp);
+        mailLink.href = 'mailto:ghuilaineo@gmail.com?subject=' + subject + '&body=' + body;
+      } catch (e) {
+        fpInput.value = 'unavailable';
+      }
+    }
+
+    copyFpBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(fpInput.value);
+        copyFpBtn.textContent = 'Copied';
+        setTimeout(()=>copyFpBtn.textContent='Copy', 1200);
+      } catch {}
+    });
+
+    loadFingerprint();
+    refresh();
+  </script>
+</body>
+</html>

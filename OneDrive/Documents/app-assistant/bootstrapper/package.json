@@ -1,0 +1,59 @@
+{
+  "name": "medops-bootstrapper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bootstrapper UI for MedOps silent NSIS install",
+  "main": "main.js",
+  "author": "Cabneo Team",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable --publish=never"
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.0"
+  },
+  "devDependencies": {
+    "electron": "28.3.3",
+    "electron-builder": "24.13.3"
+  },
+  "build": {
+    "appId": "com.medops.bootstrapper",
+    "productName": "MedOps Installer",
+    "artifactName": "MedOps-Setup.${ext}",
+    "win": {
+      "target": "portable",
+      "icon": "../assets/medops.ico"
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "extraResources": [
+      {
+        "from": "../dist/",
+        "filter": [
+          "MedOps-*-Setup.exe",
+          "MedOps Setup *.exe"
+        ],
+        "to": "installer"
+      },
+      {
+        "from": "../assets/12deed73-b111-46f3-9585-45087625cd02.mp4.gif",
+        "to": "branding/hero.gif"
+      },
+      {
+        "from": "../assets/medops.ico",
+        "to": "branding/medops.ico"
+      },
+      {
+        "from": "../assets/Contrat.rtf",
+        "to": "eula/Contrat.rtf"
+      }
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ]
+  }
+}

@@ -1,0 +1,1 @@
+script for app assistant : node scripts/issue-license.js --priv ed25519-priv.pem --fingerprint f58eb803ba85694a8e8c52c365d74fe02efae8970f381f2cbf2facf091887efd --customer TEST --edition Pro --days 365
