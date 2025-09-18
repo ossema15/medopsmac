@@ -21,6 +21,9 @@ on:
 jobs:
   build-mac:
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: OneDrive/Documents/app-assistant
 
     steps:
       - name: Checkout
@@ -70,10 +73,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MedOps-universal-dmg
-          path: OneDrive/Documents/app-assistant/dist/*.dmg
+          path: dist/*.dmg
 
       - name: Upload ZIP (universal)
         uses: actions/upload-artifact@v4
         with:
           name: MedOps-universal-zip
-          path: OneDrive/Documents/app-assistant/dist/*.zip
+          path: dist/*.zip
