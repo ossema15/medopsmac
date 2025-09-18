@@ -7,6 +7,9 @@ bootstrapper/dist/
 *.blockmap
 *.yml
 *.yaml
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
 .DS_Store
 
 # Environment and credentials

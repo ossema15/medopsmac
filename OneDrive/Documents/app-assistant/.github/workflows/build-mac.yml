@@ -21,10 +21,9 @@ on:
 jobs:
   build-mac:
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64, arm64]
+    defaults:
+      run:
+        working-directory: OneDrive/Documents/app-assistant
 
     steps:
       - name: Checkout
@@ -34,8 +33,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: |
@@ -44,8 +41,7 @@ jobs:
       - name: Build renderer
         run: npm run build
 
-      - name: Build macOS artifacts
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
+      - name: Build macOS artifacts (universal)
         env:
           # Optional signing/notarization (set these as GitHub Secrets if you want notarized builds)
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -56,18 +52,25 @@ jobs:
           # APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           # APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
-          npx electron-builder --mac dmg zip --${{ matrix.arch }}
+          # 1) Build per-arch apps to produce .app bundles
+          npx electron-builder --mac dmg zip --x64
+          npx electron-builder --mac dmg zip --arm64
+          # 2) Merge into a universal .app (use scoped package via npx)
+          npx --yes --package @electron/universal electron-universal \
+            --sourceX64 "dist/mac/MedOps.app" \
+            --sourceArm64 "dist/mac-arm64/MedOps.app" \
+            --destination "dist/MedOps-universal.app"
+          # 3) Package the universal app into DMG/ZIP
+          npx electron-builder --mac dmg zip --prepackaged dist/MedOps-universal.app
 
-      - name: Upload DMG
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
+      - name: Upload DMG (universal)
         uses: actions/upload-artifact@v4
         with:
-          name: MedOps-${{ matrix.arch }}-dmg
-          path: dist/*.dmg
+          name: MedOps-universal-dmg
+          path: OneDrive/Documents/app-assistant/dist/*.dmg
 
-      - name: Upload ZIP
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.arch == 'both' || github.event.inputs.arch == matrix.arch }}
+      - name: Upload ZIP (universal)
         uses: actions/upload-artifact@v4
         with:
-          name: MedOps-${{ matrix.arch }}-zip
-          path: dist/*.zip
+          name: MedOps-universal-zip
+          path: OneDrive/Documents/app-assistant/dist/*.zip
